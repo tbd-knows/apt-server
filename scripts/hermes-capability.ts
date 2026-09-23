@@ -1,10 +1,11 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:http';
-import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { APT_BROWSER_COMMAND_TIMEOUT_SECONDS } from '../src/claw/browser-config.js';
+import { MEMORY_TOOL_NAMES } from '../src/memory/domain.js';
+import { DISABLED_HERMES_TOOLSETS, REQUIRED_HERMES_TOOLSETS } from '../src/admin/service.js';
 
 const execFileAsync = promisify(execFile);
 const hermes = process.env.HERMES_CLI ?? 'hermes';
@@ -24,45 +25,32 @@ const activeUrls: Record<typeof profiles[number], string> = {
   'apt-capability-a': '', 'apt-capability-b': '',
 };
 let sharedMcpDiscovery = true;
-const bridgeEntry = join(process.cwd(), 'src', 'claw', 'bridge-server.ts');
+const bridgeEntry = join(process.cwd(), 'src', 'memory', 'bridge-server.ts');
 const tsxLoader = join(process.cwd(), 'node_modules', 'tsx', 'dist', 'loader.mjs');
-const browserPolicyPlugin = join(process.cwd(), 'hermes-plugins', 'apt-hunt-browser-policy');
-const aptTools = ['apt_search_knowledge', 'apt_remember', 'apt_update_private_artifact', 'apt_propose_shared_change', 'apt_previous_hunts', 'apt_commerce_hunt', 'apt_get_shopping_state', 'apt_manage_shopping'];
-assert(aptTools.length === 8 && new Set(aptTools).size === 8, 'Apt bridge must expose exactly eight unique tools.');
-let browserExecutablePath = process.env.AGENT_BROWSER_EXECUTABLE_PATH ?? '';
+const aptTools = [...MEMORY_TOOL_NAMES];
+assert(aptTools.length === 3 && new Set(aptTools).size === 3, 'Apt bridge must expose exactly three unique tools.');
+/** Bridge tools retired by the TBD pivot; none may be discoverable. */
+const retiredAptTools = ['apt_propose_shared_change', 'apt_previous_hunts', 'apt_commerce_hunt', 'apt_get_shopping_state', 'apt_manage_shopping'];
+/** Toolsets and tools that must be absent from the model surface. */
+const forbiddenToolsets = ['browser', 'skills'];
+const forbiddenTools = ['web_search', 'terminal', 'write_file', 'read_file', 'execute_code', 'delegate_task', 'cronjob', 'skills_list', 'skill_view', 'skill_manage', 'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_console'];
 
-function configYaml(multiplex: boolean, apiEnabled: boolean, port: number, sharedSkills = '') {
-  return `model:\n  default: mock-model\n  provider: custom\n  base_url: http://127.0.0.1:${providerPort}/v1\n  api_key: \${MOCK_PROVIDER_KEY}\nplatform_toolsets:\n  api_server: [memory, session_search, skills, browser]\nagent:\n  disabled_toolsets: [web, search, terminal, file, code_execution, vision, video, image_gen, video_gen, bfl, x_search, tts, stt, todo, context_engine, clarify, delegation, cronjob, homeassistant, spotify, discord, discord_admin, yuanbao, computer_use]\nbrowser:\n  backend: \"off\"\n  allow_private_urls: false\n  restrict_evaluate: true\nsecurity:\n  website_blocklist:\n    enabled: true\n    domains: [localhost, local, 0.0.0.0, 127.0.0.1, \"::1\", metadata.google.internal]\nplugins:\n  enabled: [apt-hunt-browser-policy]\n  entries:\n    apt-hunt-browser-policy:\n      allow_tool_override: true\nmemory:\n  memory_enabled: true\n  user_profile_enabled: true\n  write_approval: false\n  memory_char_limit: 2200\n  user_char_limit: 1375\nskills:\n  external_dirs: [${JSON.stringify(sharedSkills)}]\n  guard_agent_created: true\n  write_approval: false\nauxiliary:\n  background_review:\n    enabled: true\nmcp_servers:\n  apt:\n    command: ${JSON.stringify(process.execPath)}\n    args: [\"--import\", ${JSON.stringify(tsxLoader)}, ${JSON.stringify(bridgeEntry)}]\n    env:\n      APT_INTERNAL_URL: \"http://127.0.0.1:9\"\n      APT_BRIDGE_TOKEN: \"apt-capability-token-0123456789abcdef\"\n    tools:\n      include: [${aptTools.join(', ')}]\n    connect_timeout: 15\n    enabled: true\ngateway:\n  multiplex_profiles: ${multiplex}\n  multiplex_profile_allowlist: [${profiles.join(', ')}]\nplatforms:\n  api_server:\n    enabled: ${apiEnabled}\n    host: 127.0.0.1\n    port: ${port}\n    max_concurrent_runs: 10\n`;
-}
-
-function aptConfigYaml(multiplex: boolean, apiEnabled: boolean, port: number, sharedSkills = '') {
-  return configYaml(multiplex, apiEnabled, port, sharedSkills)
-    .replace('  restrict_evaluate: true\n', `  restrict_evaluate: true\n  command_timeout: ${APT_BROWSER_COMMAND_TIMEOUT_SECONDS}\n`)
-    .replace('  user_char_limit: 1375\n', '  user_char_limit: 1375\n  nudge_interval: 0\n')
-    .replace(
-      '  write_approval: false\nauxiliary:\n  background_review:\n    enabled: true\n',
-      '  write_approval: false\n  creation_nudge_interval: 0\nauxiliary:\n  background_review:\n    enabled: false\n',
-    );
+function configYaml(multiplex: boolean, apiEnabled: boolean, port: number) {
+  return `model:\n  default: mock-model\n  provider: custom\n  base_url: http://127.0.0.1:${providerPort}/v1\n  api_key: \${MOCK_PROVIDER_KEY}\nplatform_toolsets:\n  api_server: [${REQUIRED_HERMES_TOOLSETS.join(', ')}]\nagent:\n  disabled_toolsets: [${DISABLED_HERMES_TOOLSETS.join(', ')}]\nbrowser:\n  backend: \"off\"\nsecurity:\n  website_blocklist:\n    enabled: true\n    domains: [localhost, local, 0.0.0.0, 127.0.0.1, \"::1\", metadata.google.internal]\nplugins:\n  enabled: []\nmemory:\n  memory_enabled: true\n  user_profile_enabled: true\n  write_approval: false\n  memory_char_limit: 2200\n  user_char_limit: 1375\n  nudge_interval: 0\nskills:\n  external_dirs: []\n  guard_agent_created: true\n  write_approval: true\n  creation_nudge_interval: 0\nauxiliary:\n  background_review:\n    enabled: false\nmcp_servers:\n  apt:\n    command: ${JSON.stringify(process.execPath)}\n    args: [\"--import\", ${JSON.stringify(tsxLoader)}, ${JSON.stringify(bridgeEntry)}]\n    env:\n      APT_INTERNAL_URL: \"http://127.0.0.1:9\"\n      APT_BRIDGE_TOKEN: \"apt-capability-token-0123456789abcdef\"\n    tools:\n      include: [${aptTools.join(', ')}]\n    connect_timeout: 15\n    enabled: true\ngateway:\n  multiplex_profiles: ${multiplex}\n  multiplex_profile_allowlist: [${profiles.join(', ')}]\nplatforms:\n  api_server:\n    enabled: ${apiEnabled}\n    host: 127.0.0.1\n    port: ${port}\n    max_concurrent_runs: 10\n`;
 }
 
 async function writeProfile(home: string, profile: typeof profiles[number]) {
   const directory = join(home, 'profiles', profile);
-  const sharedSkills = join(directory, 'apt-shared-skills');
   await mkdir(join(directory, 'memories'), { recursive: true });
+  // A retained historical private skill stays on disk as inert data; the
+  // harness verifies it never becomes a tool path.
   await mkdir(join(directory, 'skills', 'private.capability'), { recursive: true });
-  await mkdir(join(sharedSkills, 'apt-commerce-verification'), { recursive: true });
-  const pluginDestination = join(directory, 'plugins', 'apt-hunt-browser-policy');
-  await mkdir(pluginDestination, { recursive: true });
-  for (const name of ['plugin.yaml', '__init__.py']) {
-    await writeFile(join(pluginDestination, name), await readFile(join(browserPolicyPlugin, name)));
-  }
-  await writeFile(join(directory, 'config.yaml'), aptConfigYaml(false, false, gatewayPort, sharedSkills), 'utf8');
-  await writeFile(join(directory, '.env'), `API_SERVER_KEY=${profileKeys[profile]}\nMOCK_PROVIDER_KEY=${providerKeys[profile]}\n${browserExecutablePath ? `AGENT_BROWSER_EXECUTABLE_PATH=${browserExecutablePath}\n` : ''}`, { mode: 0o600 });
+  await writeFile(join(directory, 'config.yaml'), configYaml(false, false, gatewayPort), 'utf8');
+  await writeFile(join(directory, '.env'), `API_SERVER_KEY=${profileKeys[profile]}\nMOCK_PROVIDER_KEY=${providerKeys[profile]}\n`, { mode: 0o600 });
   await writeFile(join(directory, 'SOUL.md'), `Private Soul probe for ${profile}.\n`, 'utf8');
   await writeFile(join(directory, 'memories', 'USER.md'), `USER hot-cache probe for ${profile}.\n`, 'utf8');
   await writeFile(join(directory, 'memories', 'MEMORY.md'), `MEMORY hot-cache probe for ${profile}.\n`, 'utf8');
   await writeFile(join(directory, 'skills', 'private.capability', 'SKILL.md'), '---\nname: private.capability\ndescription: User-scoped capability probe.\n---\n# Private capability probe\n', 'utf8');
-  await writeFile(join(sharedSkills, 'apt-commerce-verification', 'SKILL.md'), '---\nname: apt-commerce-verification\ndescription: Read-only shared commerce verification probe.\n---\n# Shared commerce verification probe\n', 'utf8');
 }
 
 function providerServer() {
@@ -143,26 +131,6 @@ async function stopGateway(child: ChildProcess) {
   if (child.exitCode === null) child.kill('SIGKILL');
 }
 
-async function verifyExternalBrowserInteraction() {
-  const session = `apt-hunt-${process.pid}`;
-  const environment = {
-    ...process.env,
-    ...(browserExecutablePath ? { AGENT_BROWSER_EXECUTABLE_PATH: browserExecutablePath } : {}),
-  };
-  const browserArgs = ['--yes', 'agent-browser@^0.26.0', '--session', session];
-  try {
-    await execFileAsync('npx', [...browserArgs, 'open', 'https://example.com'], { env: environment, timeout: 60_000 });
-    const snapshot = await execFileAsync('npx', [...browserArgs, 'snapshot'], { env: environment, timeout: 60_000 });
-    const linkRef = snapshot.stdout.match(/link "Learn more" \[ref=(e\d+)\]/)?.[1];
-    assert(linkRef, `External browser snapshot omitted the expected interactive link: ${snapshot.stdout.slice(0, 1_000)}`);
-    await execFileAsync('npx', [...browserArgs, 'click', `@${linkRef}`], { env: environment, timeout: 60_000 });
-    const currentUrl = await execFileAsync('npx', [...browserArgs, 'get', 'url'], { env: environment, timeout: 60_000 });
-    assert(currentUrl.stdout.includes('iana.org/help/example-domains'), `External browser click did not navigate: ${currentUrl.stdout}`);
-  } finally {
-    await execFileAsync('npx', [...browserArgs, 'close'], { env: environment, timeout: 30_000 }).catch(() => undefined);
-  }
-}
-
 function assert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
 
 interface ToolsetRow {
@@ -172,14 +140,16 @@ interface ToolsetRow {
   tools?: unknown[];
 }
 
-function registeredToolNames(row: ToolsetRow | undefined) {
-  return (row?.tools ?? []).flatMap((tool) => {
-    if (typeof tool === 'string') return [tool];
-    if (!tool || typeof tool !== 'object') return [];
-    const record = tool as { name?: unknown; key?: unknown };
-    if (typeof record.name === 'string') return [record.name];
-    return typeof record.key === 'string' ? [record.key] : [];
-  });
+function enabledToolsetKeys(body: unknown) {
+  const rows = (Array.isArray(body) ? body : (body as { toolsets?: ToolsetRow[]; data?: ToolsetRow[] }).toolsets
+    ?? (body as { data?: ToolsetRow[] }).data ?? []) as ToolsetRow[];
+  return rows.filter((row) => row.enabled).map((row) => String(row.key ?? row.name));
+}
+
+function assertToolsetBoundary(profile: string, enabledKeys: string[], label: string) {
+  for (const required of REQUIRED_HERMES_TOOLSETS) assert(enabledKeys.includes(required), `${label} ${profile} is missing ${required}: enabled=${enabledKeys.join(', ')}`);
+  for (const forbidden of forbiddenToolsets) assert(!enabledKeys.includes(forbidden), `${label} ${profile} exposed retired toolset ${forbidden}.`);
+  assert(enabledKeys.every((key) => (REQUIRED_HERMES_TOOLSETS as readonly string[]).includes(key)), `${label} ${profile} exposed a forbidden toolset: ${enabledKeys.join(', ')}.`);
 }
 
 async function reservePort() {
@@ -195,11 +165,6 @@ const home = await mkdtemp(join(tmpdir(), 'apt-hermes-capability-'));
 const provider = providerServer();
 let gateways: ChildProcess[] = [];
 try {
-  if (!browserExecutablePath) {
-    for (const candidate of ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium']) {
-      try { await access(candidate); browserExecutablePath = candidate; break; } catch { /* try next local browser */ }
-    }
-  }
   await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
   const providerAddress = provider.address();
   if (!providerAddress || typeof providerAddress === 'string') throw new Error('Mock provider did not bind a TCP port.');
@@ -215,27 +180,22 @@ try {
     const discoveredAptTools = [...new Set(mcpProbe.stdout.match(/apt_[a-z_]+/g) ?? [])].sort();
     assert(
       discoveredAptTools.length === aptTools.length && aptTools.every((tool) => discoveredAptTools.includes(tool)),
-      `${profile} MCP discovery did not expose exactly the eight approved Apt tools: ${discoveredAptTools.join(', ')}.`,
+      `${profile} MCP discovery did not expose exactly the three approved Apt tools: ${discoveredAptTools.join(', ')}.`,
     );
+    for (const retired of retiredAptTools) assert(!discoveredAptTools.includes(retired), `${profile} MCP discovery exposed retired tool ${retired}.`);
   }
   await mkdir(home, { recursive: true });
-  await writeFile(join(home, 'config.yaml'), aptConfigYaml(true, true, gatewayPort), 'utf8');
-  await writeFile(join(home, '.env'), `API_SERVER_KEY=default-0123456789abcdef0123456789abcdef0123456789abcdef\nMOCK_PROVIDER_KEY=provider-default\n${browserExecutablePath ? `AGENT_BROWSER_EXECUTABLE_PATH=${browserExecutablePath}\n` : ''}`, { mode: 0o600 });
+  await writeFile(join(home, 'config.yaml'), configYaml(true, true, gatewayPort), 'utf8');
+  await writeFile(join(home, '.env'), 'API_SERVER_KEY=default-0123456789abcdef0123456789abcdef0123456789abcdef\nMOCK_PROVIDER_KEY=provider-default\n', { mode: 0o600 });
 
   gateways = [await startGateway(home, gatewayPort)];
   for (const profile of profiles) activeUrls[profile] = `http://127.0.0.1:${gatewayPort}/p/${profile}`;
   for (const profile of profiles) {
-    const [capabilities, skills, toolsets] = await Promise.all([api(profile, '/v1/capabilities'), api(profile, '/v1/skills'), api(profile, '/v1/toolsets')]);
-    assert(capabilities.ok && skills.ok && toolsets.ok, `${profile} discovery endpoints failed.`);
-    const skillBody = await skills.json() as unknown[] | { skills?: unknown[]; data?: unknown[] };
-    const toolBody = await toolsets.json() as Array<{ key?: string; name?: string; enabled?: boolean; tools?: string[] }> | { toolsets?: Array<{ key?: string; name?: string; enabled?: boolean; tools?: string[] }>; data?: Array<{ key?: string; name?: string; enabled?: boolean; tools?: string[] }> };
-    const skillRows = Array.isArray(skillBody) ? skillBody : skillBody.skills ?? skillBody.data ?? [];
-    const toolRows = Array.isArray(toolBody) ? toolBody : toolBody.toolsets ?? toolBody.data ?? [];
-    assert(skillRows.length === 2, `${profile} did not expose exactly the Apt shared and private skill probes: ${JSON.stringify(skillBody).slice(0, 1_000)}`);
-    const enabledKeys = toolRows.filter((row) => row.enabled).map((row) => row.key ?? row.name);
-    for (const required of ['memory', 'session_search', 'skills', 'browser']) assert(enabledKeys.includes(required), `${profile} is missing ${required}.`);
+    const [capabilities, toolsets] = await Promise.all([api(profile, '/v1/capabilities'), api(profile, '/v1/toolsets')]);
+    assert(capabilities.ok && toolsets.ok, `${profile} discovery endpoints failed.`);
+    const enabledKeys = enabledToolsetKeys(await toolsets.json());
     if (!enabledKeys.includes('mcp-apt')) sharedMcpDiscovery = false;
-    assert(enabledKeys.every((key) => ['memory', 'session_search', 'skills', 'browser'].includes(String(key))), `${profile} exposed a forbidden toolset: ${enabledKeys.join(', ')}.`);
+    assertToolsetBoundary(profile, enabledKeys.filter((key) => key !== 'mcp-apt'), 'Shared');
   }
   assert((await api(profiles[1], '/v1/capabilities', {}, profileKeys[profiles[0]])).status === 401, 'Cross-profile API key was accepted.');
   assert((await api(profiles[0], '/v1/capabilities', {}, 'wrong-key-0123456789abcdef0123456789abcdef')).status === 401, 'Invalid API key was accepted.');
@@ -266,7 +226,7 @@ try {
   for (let index = 0; index < profiles.length; index += 1) {
     const profile = profiles[index]!;
     const port = isolatedPorts[index]!;
-    await writeFile(join(home, 'profiles', profile, 'config.yaml'), aptConfigYaml(false, true, port, join(home, 'profiles', profile, 'apt-shared-skills')), 'utf8');
+    await writeFile(join(home, 'profiles', profile, 'config.yaml'), configYaml(false, true, port), 'utf8');
     activeUrls[profile] = `http://127.0.0.1:${port}`;
   }
   gateways = await Promise.all(profiles.map((profile, index) => startGateway(home, isolatedPorts[index]!, profile)));
@@ -285,24 +245,16 @@ try {
   await Promise.all([waitForRun(profiles[0], fallbackConcurrent[0]), waitForRun(profiles[1], fallbackConcurrent[1])]);
   for (const profile of profiles) {
     const toolsets = await api(profile, '/v1/toolsets');
-    const body = await toolsets.json() as ToolsetRow[] | { toolsets?: ToolsetRow[]; data?: ToolsetRow[] };
-    const rows = Array.isArray(body) ? body : body.toolsets ?? body.data ?? [];
-    const enabledKeys = rows.filter((row) => row.enabled).map((row) => row.key ?? row.name);
-    for (const required of ['memory', 'session_search', 'skills', 'browser']) assert(enabledKeys.includes(required), `Per-profile ${profile} is missing ${required}: enabled=${enabledKeys.join(', ')}`);
-    assert(enabledKeys.every((key) => ['memory', 'session_search', 'skills', 'browser'].includes(String(key))), `Per-profile ${profile} exposed forbidden toolsets: ${enabledKeys.join(', ')}.`);
-    const browserTools = registeredToolNames(rows.find((row) => (row.key ?? row.name) === 'browser'));
-    assert(browserTools.includes('browser_observed_link'), `Per-profile ${profile} did not register Apt's observed-link resolver: ${browserTools.join(', ')}.`);
+    assertToolsetBoundary(profile, enabledToolsetKeys(await toolsets.json()), 'Per-profile');
   }
   for (const providerKey of ['provider-a', 'provider-b']) {
     const effectiveTools = providerTools[providerKey]!;
     for (const tool of ['tool_search', 'tool_describe', 'tool_call']) assert(effectiveTools.includes(tool), `${providerKey} model surface is missing constrained MCP discovery tool ${tool}: ${effectiveTools.join(', ')}`);
-    for (const tool of ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_scroll', 'browser_back', 'browser_press', 'browser_console']) {
-      assert(effectiveTools.includes(tool), `${providerKey} model surface is missing required Hunt browser tool ${tool}: ${effectiveTools.join(', ')}`);
-    }
-    assert(!effectiveTools.includes('web_search'), `${providerKey} model surface exposed API-backed web_search.`);
-    for (const forbidden of ['terminal', 'write_file', 'execute_code', 'delegate_task', 'cronjob']) {
+    assert(!effectiveTools.some((tool) => tool.startsWith('browser_')), `${providerKey} model surface exposed a retired browser tool: ${effectiveTools.join(', ')}`);
+    for (const forbidden of forbiddenTools) {
       assert(!effectiveTools.includes(forbidden), `${providerKey} model surface exposed forbidden tool ${forbidden}.`);
     }
+    for (const retired of retiredAptTools) assert(!effectiveTools.includes(retired), `${providerKey} model surface exposed retired bridge tool ${retired}.`);
   }
   assert(providerRequests['provider-a']!.every((request) => !request.includes('fallback-beta')), `Fallback profile A contains profile B context: ${JSON.stringify(providerRequests)}`);
   assert(providerRequests['provider-b']!.every((request) => !request.includes('fallback-alpha')), `Fallback profile B contains profile A context: ${JSON.stringify(providerRequests)}`);
@@ -323,14 +275,13 @@ try {
   const restartPorts = await Promise.all(profiles.map(() => reservePort()));
   for (let index = 0; index < profiles.length; index += 1) {
     const profile = profiles[index]!;
-    await writeFile(join(home, 'profiles', profile, 'config.yaml'), aptConfigYaml(false, true, restartPorts[index]!, join(home, 'profiles', profile, 'apt-shared-skills')), 'utf8');
+    await writeFile(join(home, 'profiles', profile, 'config.yaml'), configYaml(false, true, restartPorts[index]!), 'utf8');
     activeUrls[profile] = `http://127.0.0.1:${restartPorts[index]!}`;
   }
   gateways = await Promise.all(profiles.map((profile, index) => startGateway(home, restartPorts[index]!, profile)));
   const restartedA = await (await api(profiles[0], '/api/sessions')).text();
   const restartedB = await (await api(profiles[1], '/api/sessions')).text();
   assert(!restartedA.includes('fallback-beta') && !restartedB.includes('fallback-alpha'), 'Fallback restart introduced cross-profile session leakage.');
-  await verifyExternalBrowserInteraction();
 
   const report = {
     hermesVersion: version,
@@ -338,7 +289,9 @@ try {
     selectedTopology: 'per_profile', profiles: [...profiles], sequential: 'pass', concurrent: 'pass', historyIsolation: 'pass',
     providerContextIsolation: 'pass', stateDatabaseIsolation: 'pass', restartIsolation: 'pass', crossKeyDenial: 'pass',
     soulIsolation: 'pass', hotUserMemoryLimits: { userChars: 1375, memoryChars: 2200, result: 'pass' },
-    aptOnlySkills: 'pass', aptBridgeDiscovery: 'pass', browserHuntTools: 'pass', apiBackedWebSearchDisabled: 'pass', browserExternalInteraction: 'pass', dangerousToolsDisabled: 'pass', arbitraryMcpDisabled: 'pass',
+    aptBridgeDiscovery: 'pass', aptBridgeTools: aptTools, retiredBridgeToolsAbsent: 'pass',
+    browserToolsetDisabled: 'pass', skillsToolsetDisabled: 'pass', apiBackedWebSearchDisabled: 'pass',
+    dangerousToolsDisabled: 'pass', arbitraryMcpDisabled: 'pass',
     typedBridgeBoundary: 'covered-by-server-tests', stop: 'pass', testedAt: new Date().toISOString(),
   };
   await writeFile('docs/hermes-capability-results.json', `${JSON.stringify(report, null, 2)}\n`, 'utf8');

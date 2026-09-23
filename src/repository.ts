@@ -480,6 +480,12 @@ export class PostgresChatRepository implements ChatRepository {
     return instanceFromRow(row);
   }
 
+  /**
+   * Operator-only, confirmation-gated cleanup. The Shopping, Hunt, and Claw
+   * tables are retired from the runtime but remain in the database schema
+   * (see docs/pivot-purge.md), so ownership rows are removed in foreign-key
+   * order. Nothing calls this during normal operation.
+   */
   async deleteUserRecords(userId: string) {
     const client = await this.pool.connect();
     try {

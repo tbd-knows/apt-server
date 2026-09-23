@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { profileIdentity, ProvisioningService, type HermesProfileAdmin } from '../src/admin/service.js';
-import { APT_BROWSER_COMMAND_TIMEOUT_SECONDS, browserProfileSettings } from '../src/claw/browser-config.js';
+import {
+  DISABLED_HERMES_TOOLSETS,
+  LEGACY_BROWSER_POLICY_PLUGIN,
+  LEGACY_PROFILE_SECRETS,
+  profileIdentity,
+  ProvisioningService,
+  REQUIRED_HERMES_TOOLSETS,
+  type HermesProfileAdmin,
+} from '../src/admin/service.js';
+import { MEMORY_TOOL_NAMES } from '../src/memory/domain.js';
 import { instance, repository, USER_A } from './fixtures.js';
 
 function hermes(exists = false): HermesProfileAdmin {
@@ -14,9 +22,15 @@ function hermes(exists = false): HermesProfileAdmin {
 }
 
 describe('manual provisioning lifecycle', () => {
-  it('allows a cold browser snapshot to finish before Hermes aborts the command', () => {
-    expect(APT_BROWSER_COMMAND_TIMEOUT_SECONDS).toBe(45);
-    expect(browserProfileSettings()).toContainEqual(['browser.command_timeout', '45']);
+  it('exposes only memory and session search, and disables every retired toolset', () => {
+    expect([...REQUIRED_HERMES_TOOLSETS]).toEqual(['memory', 'session_search']);
+    for (const retired of ['browser', 'skills', 'web', 'search', 'terminal', 'file', 'code_execution', 'delegation', 'cronjob', 'computer_use']) {
+      expect(DISABLED_HERMES_TOOLSETS).toContain(retired);
+    }
+    expect(REQUIRED_HERMES_TOOLSETS.some((toolset) => (DISABLED_HERMES_TOOLSETS as readonly string[]).includes(toolset))).toBe(false);
+    expect([...MEMORY_TOOL_NAMES]).toEqual(['apt_search_knowledge', 'apt_remember', 'apt_update_private_artifact']);
+    expect(LEGACY_BROWSER_POLICY_PLUGIN).toBe('apt-hunt-browser-policy');
+    expect(LEGACY_PROFILE_SECRETS).toContain('AGENT_BROWSER_EXECUTABLE_PATH');
   });
 
   it('derives stable opaque profile and session identifiers', () => {

@@ -1,8 +1,7 @@
 import { createHmac } from 'node:crypto';
 import type { AgentInstance } from './domain.js';
 import { AppError } from './errors.js';
-import type { ConversationMessage } from './claw/domain.js';
-import type { ClawRunContext } from './claw/service.js';
+import type { ConversationMessage, RunContext } from './memory/domain.js';
 
 export type AgentRuntimeEvent =
   | { type: 'delta'; delta: string }
@@ -16,11 +15,11 @@ export interface AgentRuntime {
   stream(instance: AgentInstance, runId: string): AsyncIterable<AgentRuntimeEvent>;
   stop(instance: AgentInstance, runId: string): Promise<void>;
   health(): Promise<void>;
-  reconcile?(instance: AgentInstance, context?: ClawRunContext): Promise<void>;
+  reconcile?(instance: AgentInstance, context?: RunContext): Promise<void>;
 }
 
 export interface AgentSubmitOptions {
-  clawContext?: ClawRunContext;
+  context?: RunContext;
   instructions?: string;
   conversationHistory?: ConversationMessage[];
 }

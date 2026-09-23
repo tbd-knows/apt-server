@@ -7,14 +7,28 @@ import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 import { createClient } from '@supabase/supabase-js';
 import { hermesApiKey } from '../agent-runtime.js';
-import { aptBridgeToken } from '../claw/bridge-auth.js';
-import { browserProfileSettings } from '../claw/browser-config.js';
+import { aptBridgeToken } from '../memory/bridge-auth.js';
+import { MEMORY_TOOL_NAMES } from '../memory/domain.js';
+import { LEGACY_CLAW_MARKER_FILE, LEGACY_SHARED_SKILLS_DIRECTORY } from '../memory/materializer.js';
 import type { AppConfig } from '../config.js';
 import type { AgentInstance } from '../domain.js';
 import { AppError } from '../errors.js';
 import type { ChatRepository } from '../repository.js';
 
 const execFileAsync = promisify(execFile);
+
+/** Hermes toolsets that a provisioned TBD profile may expose on the API server. */
+export const REQUIRED_HERMES_TOOLSETS = ['memory', 'session_search'] as const;
+/** Toolsets that must never be enabled on the user path; a prompt saying "do not use" is insufficient. */
+export const DISABLED_HERMES_TOOLSETS = [
+  'browser', 'skills', 'web', 'search', 'terminal', 'file', 'code_execution', 'vision', 'video', 'image_gen', 'video_gen',
+  'bfl', 'x_search', 'tts', 'stt', 'todo', 'context_engine', 'clarify', 'delegation', 'cronjob', 'homeassistant',
+  'spotify', 'discord', 'discord_admin', 'yuanbao', 'computer_use',
+] as const;
+/** Retired Claw plugin directory that provisioning removes from existing profiles. */
+export const LEGACY_BROWSER_POLICY_PLUGIN = 'apt-hunt-browser-policy';
+/** Profile secrets written by the retired runtime that provisioning removes. */
+export const LEGACY_PROFILE_SECRETS = ['AGENT_BROWSER_EXECUTABLE_PATH'] as const;
 
 export interface HermesProfileAdmin {
   exists(profileName: string): Promise<boolean>;
@@ -70,43 +84,36 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
   }
 
   async create(profileName: string) {
-    await this.run(['profile', 'create', profileName, '--no-alias', '--no-skills', '--description', 'Private Apt beta commerce profile.']);
+    await this.run(['profile', 'create', profileName, '--no-alias', '--no-skills', '--description', 'Private TBD agent profile.']);
   }
 
   async configure(profileName: string) {
     const profileArgs = ['--profile', profileName, 'config', 'set'];
-    const sharedSkills = `${this.profileDir(profileName)}/apt-shared-skills`;
-    const bridgeSource = fileURLToPath(new URL('../claw/bridge-server.ts', import.meta.url));
-    const bridgeCompiled = fileURLToPath(new URL('../claw/bridge-server.js', import.meta.url));
+    const bridgeSource = fileURLToPath(new URL('../memory/bridge-server.ts', import.meta.url));
+    const bridgeCompiled = fileURLToPath(new URL('../memory/bridge-server.js', import.meta.url));
     const bridgeEntry = await firstAccessible([bridgeSource, bridgeCompiled]);
     const tsxLoader = fileURLToPath(new URL('../../node_modules/tsx/dist/loader.mjs', import.meta.url));
     const bridgeArgs = bridgeEntry.endsWith('.ts') ? ['--import', tsxLoader, bridgeEntry] : [bridgeEntry];
-    const bridgeTools = [
-      'apt_search_knowledge', 'apt_remember', 'apt_update_private_artifact',
-      'apt_propose_shared_change', 'apt_previous_hunts', 'apt_commerce_hunt',
-      'apt_get_shopping_state', 'apt_manage_shopping',
-    ];
-    await this.installBrowserPolicy(profileName);
+    await this.removeLegacyRuntimeFiles(profileName);
     const entries: [string, string][] = [
       ['model.default', this.config.model],
       ['model.provider', this.config.provider],
       ['model.api_key', `\${${this.config.providerKeyEnv}}`],
-      ['platform_toolsets.api_server', '["memory","session_search","skills","browser"]'],
-      ['agent.disabled_toolsets', '["web","search","terminal","file","code_execution","vision","video","image_gen","video_gen","bfl","x_search","tts","stt","todo","context_engine","clarify","delegation","cronjob","homeassistant","spotify","discord","discord_admin","yuanbao","computer_use"]'],
-      ...browserProfileSettings(),
+      ['platform_toolsets.api_server', JSON.stringify(REQUIRED_HERMES_TOOLSETS)],
+      ['agent.disabled_toolsets', JSON.stringify(DISABLED_HERMES_TOOLSETS)],
+      ['browser.backend', '"off"'],
       ['security.website_blocklist.enabled', 'true'],
       ['security.website_blocklist.domains', '["localhost","local","0.0.0.0","127.0.0.1","::1","metadata.google.internal"]'],
-      ['plugins.enabled', '["apt-hunt-browser-policy"]'],
-      ['plugins.entries.apt-hunt-browser-policy.allow_tool_override', 'true'],
+      ['plugins.enabled', '[]'],
       ['memory.memory_enabled', 'true'],
       ['memory.user_profile_enabled', 'true'],
       ['memory.write_approval', 'false'],
       ['memory.memory_char_limit', '2200'],
       ['memory.user_char_limit', '1375'],
       ['memory.nudge_interval', '0'],
-      ['skills.external_dirs', JSON.stringify([sharedSkills])],
+      ['skills.external_dirs', '[]'],
       ['skills.guard_agent_created', 'true'],
-      ['skills.write_approval', 'false'],
+      ['skills.write_approval', 'true'],
       ['skills.creation_nudge_interval', '0'],
       ['auxiliary.background_review.enabled', 'false'],
       ['mcp_servers', JSON.stringify({
@@ -114,7 +121,7 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
           command: process.execPath,
           args: bridgeArgs,
           env: { APT_INTERNAL_URL: '${APT_INTERNAL_URL}', APT_BRIDGE_TOKEN: '${APT_BRIDGE_TOKEN}' },
-          tools: { include: bridgeTools },
+          tools: { include: [...MEMORY_TOOL_NAMES] },
           connect_timeout: 15,
           enabled: true,
         },
@@ -130,11 +137,7 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
     await this.upsertSecret(profileName, 'API_SERVER_KEY', hermesApiKey(profileName, this.config.keySecret));
     await this.upsertSecret(profileName, 'APT_INTERNAL_URL', this.config.internalUrl);
     await this.upsertSecret(profileName, 'APT_BRIDGE_TOKEN', aptBridgeToken(profileName, this.config.keySecret));
-    const browserExecutable = this.config.browserExecutablePath ?? await optionalFirstAccessible([
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    ]);
-    if (browserExecutable) await this.upsertSecret(profileName, 'AGENT_BROWSER_EXECUTABLE_PATH', browserExecutable);
+    for (const key of LEGACY_PROFILE_SECRETS) await this.removeSecret(profileName, key);
     await this.run(['--profile', profileName, 'config', 'check']);
     await this.run(['--profile', profileName, 'mcp', 'test', 'apt']);
   }
@@ -169,23 +172,11 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
       await skills.json();
       const toolRows = rows(await toolsets.json(), 'toolsets') as Array<{ name?: string; key?: string; enabled?: boolean; tools?: unknown[] }>;
       const enabledToolsets = new Set(toolRows.filter((row) => row.enabled).map((row) => row.key ?? row.name).filter(Boolean));
-      for (const required of ['memory', 'session_search', 'skills', 'browser']) {
+      for (const required of REQUIRED_HERMES_TOOLSETS) {
         if (!enabledToolsets.has(required)) throw new Error(`Hermes profile is missing required ${required} toolset.`);
       }
-      const forbidden = [...enabledToolsets].filter((key) => !['memory', 'session_search', 'skills', 'browser'].includes(String(key)));
+      const forbidden = [...enabledToolsets].filter((key) => !(REQUIRED_HERMES_TOOLSETS as readonly string[]).includes(String(key)));
       if (forbidden.length) throw new Error(`Hermes API server exposes forbidden toolsets: ${forbidden.join(', ')}.`);
-      const browserRow = toolRows.find((row) => (row.key ?? row.name) === 'browser');
-      const browserTools = new Set((browserRow?.tools ?? []).map((tool) => {
-        if (typeof tool === 'string') return tool;
-        if (tool && typeof tool === 'object') {
-          const record = tool as { name?: unknown; key?: unknown };
-          return typeof record.name === 'string' ? record.name : typeof record.key === 'string' ? record.key : '';
-        }
-        return '';
-      }));
-      for (const required of ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_scroll', 'browser_back', 'browser_press', 'browser_console', 'browser_observed_link']) {
-        if (!browserTools.has(required)) throw new Error(`Hermes browser toolset is missing required Hunt primitive ${required}.`);
-      }
 
       const submitted = await request('/v1/runs', {
         method: 'POST',
@@ -219,23 +210,34 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
     await chmod(path, 0o600);
   }
 
-  private async installBrowserPolicy(profileName: string) {
-    const source = fileURLToPath(new URL('../../hermes-plugins/apt-hunt-browser-policy/', import.meta.url));
-    const destination = `${this.profileDir(profileName)}/plugins/apt-hunt-browser-policy`;
-    await mkdir(destination, { recursive: true, mode: 0o700 });
-    for (const name of ['plugin.yaml', '__init__.py']) {
-      const content = await readFile(`${source}/${name}`);
-      const temporary = `${destination}/${name}.next-${process.pid}`;
-      await writeFile(temporary, content, { mode: 0o600 });
-      await chmod(temporary, 0o600);
-      await rename(temporary, `${destination}/${name}`);
-    }
+  private async removeSecret(profileName: string, key: string) {
+    const path = `${this.profileDir(profileName)}/.env`;
+    let lines: string[] = [];
+    try { lines = (await readFile(path, 'utf8')).split(/\r?\n/); } catch { return; }
+    const next = lines.filter((line) => line && !line.startsWith(`${key}=`));
+    if (next.length === lines.filter(Boolean).length) return;
+    await writeFile(path, `${next.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
+    await chmod(path, 0o600);
+  }
+
+  /**
+   * Existing profiles were provisioned with the retired browser policy plugin,
+   * a shared-skill mount, and a Claw runtime marker. Remove them so a local
+   * Hermes cache cannot keep the disabled tools alive.
+   */
+  private async removeLegacyRuntimeFiles(profileName: string) {
+    const directory = this.profileDir(profileName);
+    await rm(`${directory}/plugins/${LEGACY_BROWSER_POLICY_PLUGIN}`, { recursive: true, force: true });
+    await rm(`${directory}/${LEGACY_SHARED_SKILLS_DIRECTORY}`, { recursive: true, force: true });
+    await rm(`${directory}/${LEGACY_CLAW_MARKER_FILE}`, { force: true });
   }
 
   private async removeNonPrivateSkills(profileName: string) {
     const directory = `${this.profileDir(profileName)}/skills`;
     let entries: Dirent[] = [];
     try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
+    // Retained `private.*` directories stay on disk as inert user data; the
+    // skills toolset is disabled so they are not a tool path.
     for (const entry of entries) {
       if (!entry.name.startsWith('private.')) await rm(`${directory}/${entry.name}`, { recursive: true, force: true });
     }
@@ -250,11 +252,7 @@ async function firstAccessible(paths: string[]) {
   for (const path of paths) {
     try { await access(path); return path; } catch { /* try compiled/source counterpart */ }
   }
-  throw new Error('Apt Claw bridge entrypoint is missing.');
-}
-
-async function optionalFirstAccessible(paths: string[]) {
-  try { return await firstAccessible(paths); } catch { return null; }
+  throw new Error('Apt agent bridge entrypoint is missing.');
 }
 
 export class ProvisioningService {
