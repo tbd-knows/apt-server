@@ -1,8 +1,19 @@
 import type { NetworkInterfaceInfo } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { lanAddress, profileUrlMap, requestedUserIds, upsertEnvironment } from '../src/local-stack.js';
+import { lanAddress, mobileApiUrl, profileUrlMap, requestedUserIds, upsertEnvironment } from '../src/local-stack.js';
 
 describe('local phone stack configuration', () => {
+  it('uses a stable HTTPS API without LAN discovery and preserves it during env rewrites', () => {
+    const url = mobileApiUrl({}, 8787, 'https://pilot.example.com/');
+    expect(url).toBe('https://pilot.example.com');
+    const env = upsertEnvironment('', { EXPO_PUBLIC_APT_API_URL: url });
+    expect(upsertEnvironment(env, { EXPO_PUBLIC_APT_API_URL: url })).toBe(env);
+    expect(mobileApiUrl({}, 8787, 'http://100.64.1.2:8787')).toBe('http://100.64.1.2:8787');
+    expect(mobileApiUrl({}, 8787, undefined, '192.168.1.10')).toBe('http://192.168.1.10:8787');
+  });
+  it.each(['', '/relative', 'ftp://example.com', 'http://example.com', 'http://192.168.1.2.evil.com', 'https://user:secret@example.com', 'https://example.com/path', 'https://example.com?secret=x'])('rejects invalid or unsafe API origin %s', url => {
+    expect(() => mobileApiUrl({}, 8787, url)).toThrow('APT_MOBILE_API_URL');
+  });
   it('accepts repeated CLI users ahead of configured defaults', () => {
     expect(requestedUserIds([
       '--user-id', '22f2cd36-a208-494d-abd8-35fe7bccf8c2',

@@ -2,17 +2,17 @@
 
 Private chat backend for the TBD two-founder pilot. The mobile app authenticates with Supabase, this service owns all transcript writes, and each founder is mapped to one manually provisioned, process-isolated Hermes profile and stable session.
 
-This is the foundation left by the September 2026 pivot purge (Linear TBD-11). It provides authenticated private chat with owner-scoped memory and nothing else: no merchant research, browser automation, Shopping, Feed, Boards, or shared prompt releases, and no purchase, payment, or shipping capability yet. See [docs/pivot-purge.md](docs/pivot-purge.md) for the keep/remove/defer map and the database disposition.
+TBD-12 adds the two-founder commerce pilot: private request drafts, durable agent messages, exact human approvals, hosted Stripe payments, EasyPost postage/tracking, and founder resolution/returns. Read [the pilot setup and recovery runbook](docs/pilot-commerce.md) before enabling providers. Test fixtures do not establish sandbox or live success. The retired shopping product remains removed; [the purge map](docs/pivot-purge.md) still controls historical data.
 
 ## Runtime contract
 
 - Node.js `22`, strict TypeScript, Fastify, PostgreSQL, and Hermes Agent `v2026.8.19` (`0.20.5`).
-- Supabase Auth access tokens are required on every `/v1/chat/*` route. A `401` never falls back to an anonymous identity.
+- Supabase Auth access tokens and membership in the two-UUID allowlist are required on every `/v1/chat/*` and `/v1/commerce/*` route. A `401` never falls back to an anonymous identity.
 - Mobile clients cannot read or write the chat tables directly. RLS is forced, `anon`/`authenticated` grants are revoked, and only the private server database connection mutates transcripts.
 - There is one user-visible thread, one active run per user, and one stable Hermes session per user.
 - Before each Runs API submission, the server compiles a small versioned app prompt (`src/memory/prompt.ts`) with that user's private Soul/USER/MEMORY artifacts, relevant private knowledge, and whole recent messages bounded to 48,000 characters. Nothing is read from a shared release table.
 - The Hermes topology is `per_profile`; see [the capability result](docs/hermes-capability.md). Shared multiplexing crosses the provider-credential boundary and must not be re-enabled.
-- Hermes profiles contain no bundled skills and no plugins. They expose only the `memory` and `session_search` toolsets plus the three typed Apt bridge tools (`apt_search_knowledge`, `apt_remember`, `apt_update_private_artifact`). Browser, skills, web, terminal, filesystem, code execution, delegation, and cron toolsets are disabled in profile configuration and rejected by provisioning validation.
+- Hermes profiles contain no bundled skills and no plugins. They expose only the `memory` and `session_search` toolsets plus the four typed Apt bridge tools (`apt_search_knowledge`, `apt_remember`, `apt_update_private_artifact`, `apt_commerce`). Browser, skills, web, terminal, filesystem, code execution, delegation, and cron toolsets are disabled in profile configuration and rejected by provisioning validation.
 
 ## Development
 
@@ -62,7 +62,7 @@ The obsolete read-only skill mount is removed without following symlinks.
 
 Message bodies are `{ "clientMessageId": "<uuid>", "content": "..." }`. Content is normalized and limited to 8,000 characters. Unknown fields are ignored, never stored. Reusing the same client message ID for the same user returns the original turn; a second active turn returns `RUN_IN_PROGRESS`.
 
-`POST /internal/agent/tool` is the loopback bridge that a user's own Hermes profile calls with a profile-bound HMAC token. It accepts only the three private-context tools and binds every call to the run that is active for that profile, so tool arguments can never select another user.
+`POST /internal/agent/tool` is the loopback bridge that a user's own Hermes profile calls with a profile-bound HMAC token. It accepts only the four owner-bound tools and binds every call to the run that is active for that profile, so tool arguments can never select another user.
 
 Stable error response:
 
@@ -72,7 +72,7 @@ Stable error response:
 
 ## Database
 
-Migrations live under `supabase/migrations`. All six are immutable and replayable; none was rewritten by the purge. The active runtime uses:
+Migrations live under `supabase/migrations`. The six historical migrations are unchanged. A seventh forward migration adds eleven server-owned `pilot_*` tables. The active runtime uses:
 
 - `agent_instances`: Supabase user to opaque Hermes profile/session mapping.
 - `messages`: keyset-ordered user and assistant transcript with same-owner reply constraints.
@@ -81,7 +81,7 @@ Migrations live under `supabase/migrations`. All six are immutable and replayabl
 
 The `claw_releases`/`claw_documents`/`claw_capabilities`/`claw_admins`/`claw_learning_proposals`/`claw_user_skills`, `commerce_hunts`, and `shopping_*` objects remain in the schema but are not read or written by this server. Their disposition is recorded in [docs/pivot-purge.md](docs/pivot-purge.md). Do not drop them as part of a code change.
 
-On startup, queued/running/stopping rows are failed with `SERVER_RESTARTED`; Hermes is stopped best-effort and no prompt is replayed.
+On startup, queued/running/stopping **chat run** rows are failed with `SERVER_RESTARTED`; Hermes is stopped best-effort and no prompt is replayed. Commerce operations instead reconcile their durable provider identities through a separate worker.
 
 ## Manual beta lifecycle
 
@@ -109,9 +109,9 @@ For local host processes on distinct ports, set `HERMES_PROFILE_URL_MAP` to a JS
 HERMES_CLI=/path/to/hermes HERMES_VERSION=v2026.8.19 npm run test:hermes-capability
 ```
 
-The harness creates two fresh profiles and a deterministic OpenAI-compatible provider, then verifies sequential/concurrent turns, provider context and credential separation, session/history/state isolation, restart isolation, cross-key denial, exact three-tool Apt bridge discovery, absence of the retired bridge tools, absence of the browser and skills toolsets and of every dangerous tool from the model surface, and stop behavior. It writes [the audit result](docs/hermes-capability-results.json).
+The harness creates two fresh profiles and a deterministic OpenAI-compatible provider, then verifies sequential/concurrent turns, provider context and credential separation, session/history/state isolation, restart isolation, cross-key denial, exact four-tool Apt bridge discovery, absence of the retired bridge tools, absence of the browser and skills toolsets and of every dangerous tool from the model surface, and stop behavior. It writes [the audit result](docs/hermes-capability-results.json).
 
-Against a disposable local PostgreSQL (loopback only; the script drops the public schema), the upgrade-shaped fixture check replays all six migrations unchanged, seeds pre-pivot data in the retired tables, and drives the server through a fake Hermes runtime to verify owner-scoped memory, bridge-tool binding, two-user isolation, stop, restart recovery, and that retired rows are untouched:
+Against a disposable local PostgreSQL (loopback only; the script drops the public schema), the upgrade-shaped fixture check replays all seven migrations, seeds pre-pivot data in the retired tables, and drives the server through a fake Hermes runtime to verify owner-scoped memory, bridge-tool binding, two-user isolation, stop, restart recovery, and that retired rows are untouched:
 
 ```bash
 docker run -d --name tbd-pg -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:16-alpine
@@ -125,3 +125,13 @@ npm run test:e2e-live -- --user-a <uuid-a> --user-b <uuid-b>
 ```
 
 It verifies authentication, real message/SSE completion, duplicate-send idempotency, pagination, stop, cross-user isolation, and that the retired Shopping and Claw routes return `404`. The `--write-context <marker>` and `--recall-context <marker>` modes support a deterministic continuity check across a manual Hermes restart; `--leave-running <prompt>` supports the Apt Server restart/no-replay probe.
+
+Commerce verification after the disposable database fixture:
+
+```bash
+export APT_LOCAL_DATABASE_URL=postgresql://postgres:pw@127.0.0.1:55432/postgres
+npm run test:commerce-db
+npm run test:commerce-worker
+```
+
+CI runs both suites on PostgreSQL 16. They use deterministic provider fakes and cover recovery, privacy, approvals, cancellation races, refunds, returns, and signed webhook deduplication.

@@ -22,7 +22,9 @@
     "test:e2e-live": "node --env-file-if-exists=.env --import tsx scripts/e2e-live.ts",
     "local:phone": "node --env-file-if-exists=.env --import tsx scripts/local-phone-stack.ts",
     "test:hermes-capability": "tsx scripts/hermes-capability.ts",
-    "test:local-db": "node --import tsx scripts/local-db-check.ts"
+    "test:local-db": "node --import tsx scripts/local-db-check.ts",
+    "test:commerce-db": "node --import tsx scripts/commerce-db-check.ts",
+    "test:commerce-worker": "node --import tsx scripts/commerce-worker-check.ts"
   },
   "dependencies": {
     "@fastify/cors": "11.3.0",
@@ -30,6 +32,7 @@
     "@supabase/supabase-js": "2.112.3",
     "fastify": "5.12.1",
     "pg": "8.23.0",
+    "sharp": "0.35.4",
     "zod": "4.4.3"
   },
   "devDependencies": {

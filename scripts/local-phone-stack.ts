@@ -8,7 +8,7 @@ import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 import pg from 'pg';
 import { loadConfig } from '../src/config.js';
-import { lanAddress, profileUrlMap, requestedUserIds, upsertEnvironment } from '../src/local-stack.js';
+import { mobileApiUrl, profileUrlMap, requestedUserIds, upsertEnvironment } from '../src/local-stack.js';
 import { PostgresChatRepository } from '../src/repository.js';
 import { HermesCliProfileAdmin, ProvisioningService, SupabaseUserAdmin } from '../src/admin/service.js';
 
@@ -124,8 +124,16 @@ async function main() {
     );
     await waitForHealth(`http://127.0.0.1:${config.port}`, server, 30_000, true);
 
-    const address = lanAddress(networkInterfaces(), process.env.APT_LOCAL_LAN_IP);
-    const apiUrl = `http://${address}:${config.port}`;
+    const apiUrl = mobileApiUrl(networkInterfaces(), config.port, process.env.APT_MOBILE_API_URL, process.env.APT_LOCAL_LAN_IP);
+    if (process.env.APT_MOBILE_API_URL !== undefined) {
+      try {
+        const health = await fetch(`${apiUrl}/health`, { signal: AbortSignal.timeout(10_000), redirect: 'error' });
+        const body = await health.json() as { status?: string };
+        if (!health.ok || body.status !== 'ok') throw new Error('Unhealthy API');
+      } catch {
+        throw new Error('APT_MOBILE_API_URL is unreachable or unhealthy. Start the API tunnel/overlay and verify /health; Metro does not expose Fastify.');
+      }
+    }
     await writeMobileEnvironment(apiUrl, config.supabase.url, config.supabase.publishableKey);
     process.stdout.write(`\nApt Server is healthy. The iPhone will use ${apiUrl}.\n`);
     process.stdout.write('Building, installing, launching, and starting Metro...\n\n');

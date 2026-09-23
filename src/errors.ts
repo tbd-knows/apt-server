@@ -1,4 +1,8 @@
 export const ERROR_CODES = [
+  'FORBIDDEN',
+  'NOT_FOUND',
+  'COMMERCE_CONFLICT',
+  'PROVIDER_NOT_READY',
   'UNAUTHENTICATED',
   'AGENT_NOT_PROVISIONED',
   'AGENT_DISABLED',
@@ -13,6 +17,10 @@ export const ERROR_CODES = [
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
 const statusByCode: Record<ErrorCode, number> = {
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  COMMERCE_CONFLICT: 409,
+  PROVIDER_NOT_READY: 503,
   UNAUTHENTICATED: 401,
   AGENT_NOT_PROVISIONED: 409,
   AGENT_DISABLED: 403,

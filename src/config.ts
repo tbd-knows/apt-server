@@ -31,6 +31,15 @@ const configSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(8787),
   LOG_LEVEL: z.string().default('info'),
   APT_ALLOWED_ORIGINS: z.string().default(''),
+  APT_INTERNAL_PEER_IPS: z.string().default('').transform(v => v.split(',').map(s => s.trim()).filter(Boolean))
+    .pipe(z.array(z.ipv4().refine(ip => {
+      const [a, b] = ip.split('.').map(Number);
+      return a === 10 || (a === 172 && b! >= 16 && b! <= 31) || (a === 192 && b === 168);
+    }, 'Internal peers must be explicit private IPv4 addresses.'))),
+  APT_PILOT_USER_IDS: z.string().transform(value => value.split(',').map(id => id.trim().toLowerCase()))
+    .pipe(z.array(z.uuid()).length(2).refine(ids => new Set(ids).size === 2, 'Two distinct founder UUIDs are required.')),
+  APT_COMMERCE_MODE: z.enum(['test', 'live']).default('test'),
+  APT_LIVE_COMMERCE_ENABLED: booleanFromString,
   SUPABASE_URL: z.url(),
   SUPABASE_PUBLISHABLE_KEY: z.string().min(20),
   SUPABASE_SERVICE_ROLE_KEY: configuredValue.pipe(z.string().min(20)),
@@ -51,6 +60,9 @@ const configSchema = z.object({
   HERMES_PROVIDER_API_KEY: configuredValue,
   APT_INTERNAL_URL: z.url().default('http://127.0.0.1:8787'),
 }).superRefine((value, context) => {
+  if (value.APT_COMMERCE_MODE === 'live' && !value.APT_LIVE_COMMERCE_ENABLED) {
+    context.addIssue({ code: 'custom', path: ['APT_LIVE_COMMERCE_ENABLED'], message: 'Live commerce must be explicitly enabled by the operator.' });
+  }
   if (value.HERMES_PROVIDER === 'custom' && !value.HERMES_PROVIDER_BASE_URL) {
     context.addIssue({
       code: 'custom',
@@ -70,6 +82,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     port: parsed.PORT,
     logLevel: parsed.LOG_LEVEL,
     allowedOrigins: parsed.APT_ALLOWED_ORIGINS.split(',').map((item) => item.trim()).filter(Boolean),
+    internalPeerIps: parsed.APT_INTERNAL_PEER_IPS,
+    pilotUserIds: parsed.APT_PILOT_USER_IDS,
+    commerceMode: parsed.APT_COMMERCE_MODE,
     supabase: {
       url: parsed.SUPABASE_URL,
       publishableKey: parsed.SUPABASE_PUBLISHABLE_KEY,

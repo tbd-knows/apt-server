@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { MEMORY_LIMITS, type MemoryToolName } from './domain.js';
+import { draftRequestSchema, itemSchema } from '../commerce/domain.js';
 
 const internalUrl = z.url().parse(process.env.APT_INTERNAL_URL).replace(/\/$/, '');
 const bridgeToken = z.string().min(32).parse(process.env.APT_BRIDGE_TOKEN);
@@ -35,6 +36,13 @@ registerTool('apt_remember', 'Store a durable fact for only the current user.', 
 registerTool('apt_update_private_artifact', 'Update the current user’s private Soul, USER hot cache, or MEMORY hot cache with optimistic revision control.', {
   kind: z.enum(['soul', 'user_profile', 'memory']), content: z.string().max(MEMORY_LIMITS.soulText),
   expected_revision: z.string().regex(/^\d+$/),
+});
+
+registerTool('apt_commerce', 'Read your commerce inbox/state, prepare a request or item for owner review, or ask your owner a question. All drafts are private until a human approves sharing in the action inbox. Cannot approve, pay, buy labels or set provider facts. Stop and wait after preparing an owner action.', {
+  action: z.enum(['state', 'draft_request', 'draft_item', 'ask_owner', 'suggest_preference']),
+  input: draftRequestSchema.optional(), exchangeId: z.uuid().optional(),
+  item: itemSchema.optional(), question: z.string().min(1).max(500).optional(),
+  key: z.string().optional(), value: z.string().optional(), provenance: z.string().optional(),
 });
 
 await server.connect(new StdioServerTransport());

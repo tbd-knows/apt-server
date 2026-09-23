@@ -96,3 +96,24 @@ function ipv4Pattern(value: string) {
   const parts = value.split('.');
   return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
 }
+
+/** Resolve an explicit API origin before attempting LAN interface discovery. */
+export function mobileApiUrl(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>, port: number, override?: string, lanOverride?: string) {
+  if (override === undefined) return `http://${lanAddress(interfaces, lanOverride)}:${port}`;
+  if (!/^https?:\/\//.test(override) || override !== override.trim() || /[\r\n]/.test(override) || !URL.canParse(override)) {
+    throw new Error('APT_MOBILE_API_URL must be an absolute HTTP(S) URL.');
+  }
+  const url = new URL(override);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+    throw new Error('APT_MOBILE_API_URL must be an HTTP(S) origin without credentials, path, query or fragment.');
+  }
+  const host = url.hostname;
+  const parts = host.split('.').map(Number);
+  const privateIp = ipv4Pattern(host) && (parts[0] === 10 || parts[0] === 127
+    || (parts[0] === 192 && parts[1] === 168) || (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31)
+    || (parts[0] === 100 && parts[1]! >= 64 && parts[1]! <= 127));
+  if (url.protocol === 'http:' && !privateIp && host !== 'localhost' && host !== '[::1]') {
+    throw new Error('APT_MOBILE_API_URL requires HTTPS for remote hosts; iOS blocks remote cleartext HTTP.');
+  }
+  return url.origin;
+}

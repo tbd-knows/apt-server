@@ -49,6 +49,7 @@ const PROFILE_B = 'apt-bbbbbbbbbbbbbbbbbbbb';
 const HISTORY = ['I wear US 10 and like white sneakers', 'Noted: size 10, white sneakers.'];
 
 const config = loadConfig({
+  APT_PILOT_USER_IDS: '11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222',
   NODE_ENV: 'test', LOG_LEVEL: 'error', SUPABASE_URL: 'https://example.supabase.co',
   SUPABASE_PUBLISHABLE_KEY: 'publishable-key-for-tests', SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-for-tests',
   SUPABASE_DATABASE_URL: databaseUrl, SUPABASE_DATABASE_SSL: 'false', HERMES_KEY_SECRET: 'k'.repeat(32),
@@ -73,7 +74,7 @@ async function resetDatabase() {
   `);
   const directory = join(serverDirectory, 'supabase', 'migrations');
   const files = (await readdir(directory)).filter((name) => name.endsWith('.sql')).sort();
-  assert.equal(files.length, 6, 'Expected the six immutable migrations.');
+  assert.equal(files.length, 7, 'Expected six historical migrations plus the additive pilot migration.');
   for (const file of files) await sql.query(await readFile(join(directory, file), 'utf8'));
   return files;
 }
@@ -312,12 +313,17 @@ try {
 
     await sql.query(`insert into auth.users(id, email) values ($1, 'c@example.com')`, [C]);
     await sql.query(`insert into public.agent_instances(user_id, hermes_profile_name, hermes_session_id) values ($1, 'apt-cccccccccccccccccccc', '99999999-9999-4999-8999-999999999990')`, [C]);
+    assert.equal((await app.inject({ method: 'GET', url: '/v1/chat', headers: { authorization: 'Bearer c' } })).statusCode, 403);
+    results.thirdUserDenied = 'pass';
+    // Independently exercise a newly configured founder's first turn.
+    config.pilotUserIds[1] = C;
     const runC = await send(app, 'c', '99999999-9999-4999-8999-999999999991', 'First ever');
     assert.equal((await sse(app, 'c', runC)).at(-1)?.type, 'run.completed');
     assert.equal((await sql.query('select count(*) from public.claw_user_profiles where user_id = $1', [C])).rows[0].count, '1');
     // Let the post-run reconciliation finish before the pool closes.
     await new Promise((resolve) => setTimeout(resolve, 200));
     results.freshUserFirstTurn = 'pass';
+    config.pilotUserIds[1] = B;
   } finally {
     await app.close();
   }

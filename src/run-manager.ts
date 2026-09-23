@@ -48,7 +48,7 @@ class RunChannel {
 export class RunManager {
   private readonly channels = new Map<string, RunChannel>();
   private readonly tasks = new Map<string, Promise<void>>();
-  private readonly activeContexts = new Map<string, { instance: AgentInstance; context: RunContext }>();
+  private readonly activeContexts = new Map<string, { instance: AgentInstance; context: RunContext; toolSteps: number }>();
 
   constructor(
     private readonly repository: ChatRepository,
@@ -65,7 +65,7 @@ export class RunManager {
       runId: turn.run.id,
       requestMessageId: turn.requestMessage.id,
     };
-    this.activeContexts.set(instance.hermesProfileName, { instance, context });
+    this.activeContexts.set(instance.hermesProfileName, { instance, context, toolSteps: 0 });
     const task = this.execute(userId, instance, turn, channel, context)
       .catch((error: unknown) => {
         this.logger.error({ error, runId: turn.run.id, userId }, 'Run execution crashed');
@@ -145,6 +145,7 @@ export class RunManager {
     if (!this.memoryService) throw new AppError('UPSTREAM_FAILED', 'The agent tool bridge is not configured.');
     const active = this.activeContexts.get(profileName);
     if (!active) throw new AppError('RUN_NOT_FOUND', 'No active run is bound to this agent profile.');
+    if (++active.toolSteps > 24) throw new AppError('COMMERCE_CONFLICT', 'Tool limit reached. Pause and ask your owner.');
     return this.memoryService.invoke(active.context, tool, argumentsValue);
   }
 

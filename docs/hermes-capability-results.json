@@ -26,7 +26,8 @@
   "aptBridgeTools": [
     "apt_search_knowledge",
     "apt_remember",
-    "apt_update_private_artifact"
+    "apt_update_private_artifact",
+    "apt_commerce"
   ],
   "retiredBridgeToolsAbsent": "pass",
   "browserToolsetDisabled": "pass",
@@ -34,7 +35,9 @@
   "apiBackedWebSearchDisabled": "pass",
   "dangerousToolsDisabled": "pass",
   "arbitraryMcpDisabled": "pass",
+  "commerceToolInvocation": "pass (mock provider, file-backed bridge fixture)",
+  "commercePauseResumeAfterRestart": "pass",
   "typedBridgeBoundary": "covered-by-server-tests",
   "stop": "pass",
-  "testedAt": "2026-09-23T08:08:58.619Z"
+  "testedAt": "2026-09-23T10:08:45.374Z"
 }
