@@ -13,6 +13,14 @@ const required = {
 };
 
 describe('Hermes provider configuration', () => {
+  it('pins A2A destinations to HTTP origins without embedded secrets', () => {
+    const profile = 'apt-aaaaaaaaaaaaaaaaaaaa';
+    for (const url of ['file:///tmp/peer', 'https://user:secret@peer', 'https://peer/?token=secret', 'https://peer/alternate', 'https://peer/#fragment']) {
+      expect(() => loadConfig({ ...required, HERMES_A2A_PROFILE_URL_MAP: JSON.stringify({ [profile]: url }) })).toThrow();
+    }
+    expect(() => loadConfig({ ...required, HERMES_A2A_PROFILE_URL_TEMPLATE: 'http://peer:9900' })).toThrow();
+    expect(loadConfig({ ...required, HERMES_A2A_PROFILE_URL_MAP: JSON.stringify({ [profile]: 'http://127.0.0.1:9900' }) }).hermes.a2aProfileUrls[profile]).toBe('http://127.0.0.1:9900');
+  });
   it('defaults to the direct OpenAI API provider', () => {
     expect(loadConfig(required).hermes.provider).toBe('openai-api');
   });

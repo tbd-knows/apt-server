@@ -48,6 +48,8 @@ describe('provider contracts', () => {
     const options = fetcher.mock.calls[2]![1]!;
     expect(options.headers).toMatchObject({ 'Idempotency-Key': 'op_fixture', 'Stripe-Version': '2025-02-24.acacia' });
     const fields = new URLSearchParams(String(options.body));
+    expect(fields.get('payment_method_types[0]')).toBe('card');
+    expect(fields.get('payment_method_types[1]')).toBe('link');
     expect(fields.get('payment_intent_data[transfer_data][amount]')).toBe('5000');
     expect(fields.get('line_items[0][price_data][unit_amount]')).toBe('6500');
     expect([...fields.keys()].join()).not.toContain('address');

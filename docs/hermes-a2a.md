@@ -1,0 +1,28 @@
+# Hermes A2A commerce boundary
+
+The pilot uses Hermes v2026.8.19's native A2A adapter, Agent Card, protocol helpers and task handling. `hermes-plugins/tbd-commerce-a2a` specializes the inbound task handler and adds a database-backed outgoing delivery loop. This is the first part of the agent-led rework; discovery, service connection and dynamic fulfillment remain under implementation.
+
+## Private owner turns and shared messages
+
+Each founder still has an isolated Hermes profile, model credentials and private conversation. The default inbound A2A handler would invoke that private agent and return its output to the caller. Commerce instead accepts only an immutable `pilot_messages.id` reference. The authenticated receiving bridge verifies the ready sender/recipient, configured founder pair, commerce mode and previously approved shared record. It persists a receipt; the existing server run manager then wakes the recipient's private conversation using that same message UUID as the retry identity.
+
+Peer tasks receive only a deterministic receipt, never owner-model output, private memory, full addresses, budget or payment credentials. An owner-approved reply is a separate durable message back through A2A. No arbitrary peer text, runtime commands or callback URLs are accepted. Message content remains in the two-founder server database; this boundary is deliberately not a general agent network.
+
+Transport bridge credentials, directed peer credentials and owner tool credentials use separate HMAC namespaces. A compromised peer token cannot call private memory/commerce tools. Native A2A is explicitly disabled as a second platform because setting `A2A_PORT` otherwise enables its unrestricted handler alongside the commerce adapter.
+
+## Setup and recovery
+
+Reprovision both existing profiles with the normal provisioning command after applying migration `20260923125200`. This copies the plugin and derives internal credentials from the existing server secret; it requires no additional user/provider signup. Provisioning preserves owner memory. Restart each gateway and the server after deployment.
+
+Port 9900 is private between the two gateways. Set `HERMES_A2A_PROFILE_URL_TEMPLATE` or `HERMES_A2A_PROFILE_URL_MAP` to their HTTP(S) origins; local phone tooling supplies a loopback map automatically. Do not publish that port through the mobile HTTPS endpoint. Compose uses the internal service network. Agent Cards cannot redirect credential-bearing requests to a different advertised destination.
+
+Outbox leases and receipts persist in Postgres. Five automatic attempts are bounded by a 30-second cooldown. After the final attempt has had 60 seconds to finish, the sender sees a paused delivery in Actions and can authorize one additional attempt. Retrying retains the original UUID and audit trail. Receiver restart, duplicate sends and lost responses do not create a new message or owner turn. Delivery receipt does not imply seller agreement, payment or shipment.
+
+## Evidence
+
+- `npm run test:a2a-db`: real PostgreSQL checks in CI for unapproved/foreign/mode denial, leases, retry ownership, receipt replay and owner-wake eligibility. Run after `test:local-db` against the disposable database.
+- `npm run test:harness-db`: real PostgreSQL checks in CI for private drafts, owner-only exact approval, one preparation per turn, stale/expired/replayed denial and normal payment guards. A new service instance reads the same waiting action.
+- `HERMES_CLI=... APT_LOCAL_DATABASE_URL=... npm run test:hermes-a2a`: two actual isolated Hermes gateways, real native A2A HTTP and Postgres; a deterministic model fixture. Verifies cards, approved inquiry/decline delivery, private recipient wake, a real owner-bound commerce MCP preparation, human approval before sending, hostile input rejection, credential separation, duplicate protection and restart recovery. Buyer private canaries remain absent from the seller model request. Result is recorded in `hermes-a2a-results.json`.
+- Neither test is evidence of live-model judgment, Stripe payment, label purchase, phone acceptance or the complete agent-led fulfillment workflow.
+
+Reference: [Hermes A2A guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/a2a). Runtime source is pinned to `fcbd1076a93841fa88855acce810e342a5b78101`.

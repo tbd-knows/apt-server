@@ -75,6 +75,21 @@ export interface PrivateInput {
   packing: Packing | null; packingVersion: number;
   returnPacking?: Packing; returnPackingVersion?: number;
   suggestedAddress?: Address;
+  agentAction?: PreparedAction;
+}
+/** Preparations do not grant authority. The authenticated owner reviews the
+ * exact command, and execution still uses all normal commerce guards. */
+export const preparedCommandSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('message'), kind: z.enum(['question', 'answer', 'counteroffer']), text: shortText }).strict(),
+  z.object({ type: z.literal('decline'), reason: shortText }).strict(),
+  z.object({ type: z.literal('cancel'), reason: shortText }).strict(),
+  z.object({ type: z.literal('problem'), reason: shortText }).strict(),
+  z.object({ type: z.literal('quote') }).strict(),
+  z.object({ type: z.literal('checkout') }).strict(),
+]);
+export interface PreparedAction {
+  id: string; revision: number; command: z.infer<typeof preparedCommandSchema>;
+  explanation: string; expiresAt: string; digest: string;
 }
 export interface ReturnPlan {
   resolutionId: string; version: number; quote: Quote | null; subsidy: string; approvals: string[];
@@ -193,6 +208,9 @@ export const humanCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('received') }).strict(),
   z.object({ type: z.literal('problem'), reason: shortText }).strict(),
   z.object({ type: z.literal('retry_operation'), operationId: z.uuid(), reason: shortText }).strict(),
+  z.object({ type: z.literal('retry_delivery'), messageId: z.uuid() }).strict(),
+  z.object({ type: z.literal('approve_agent_action'), actionId: z.uuid(), actionDigest: z.string().length(64) }).strict(),
+  z.object({ type: z.literal('dismiss_agent_action'), actionId: z.uuid() }).strict(),
   z.object({ type: z.literal('attach_provider_reference'), operationId: z.uuid(), providerId: z.string().regex(/^(shp_|cs_)[A-Za-z0-9_]+$/), reason: shortText }).strict(),
   z.object({ type: z.literal('propose_resolution'), remedy: z.enum(['resume','refund','return','absorb_postage']), reason: shortText }).strict(),
   z.object({ type: z.literal('approve_resolution'), binding: z.unknown() }).strict(),

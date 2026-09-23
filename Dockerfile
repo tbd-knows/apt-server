@@ -13,6 +13,7 @@ RUN groupadd --system apt && useradd --system --gid apt --home-dir /app apt
 COPY --from=build --chown=apt:apt /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=apt:apt /app/node_modules ./node_modules
 COPY --from=build --chown=apt:apt /app/dist ./dist
+COPY --chown=apt:apt hermes-plugins ./hermes-plugins
 USER apt
 EXPOSE 8787
 CMD ["node", "dist/server.js"]

@@ -5,6 +5,20 @@ import { instance, repository, run, runtime, turn, USER_A } from './fixtures.js'
 const logger = { info: vi.fn(), error: vi.fn() };
 
 describe('RunManager', () => {
+  it('finishes private memory reconciliation before releasing the run for an owner/A2A follow-up', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const reconcile = vi.fn(async () => gate);
+    const repo = repository();
+    const agent = { ...runtime([{ type: 'completed' as const, output: 'ready' }]), reconcile };
+    const manager = new RunManager(repo, agent, logger);
+    manager.begin(USER_A, instance, turn());
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledOnce());
+    expect(repo.completeRun).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() => expect(repo.completeRun).toHaveBeenCalledOnce());
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
   it('translates streamed deltas and persists the terminal assistant response', async () => {
     const repo = repository({
       getRun: vi.fn(async () => run({ status: 'queued', hermesRunId: null })),

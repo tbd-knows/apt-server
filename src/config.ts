@@ -10,6 +10,17 @@ const configuredValue = z.string().min(1).refine(
   'Replace the local setup marker with the real secret or provider value.',
 );
 
+function isHttpOrigin(value: string) {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
+    && url.pathname === '/' && !url.search && !url.hash;
+}
+const a2aTemplate = z.string().default('http://hermes-{profile}:9900').refine(
+  value => value.includes('{profile}') && isHttpOrigin(value.replaceAll('{profile}', 'apt-aaaaaaaaaaaaaaaaaaaa')),
+  'A2A URLs must be HTTP(S) origins without credentials, paths or queries, including {profile}.',
+);
+
 const profileUrlMap = z.string().default('{}').transform((value, context) => {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -50,6 +61,8 @@ const configSchema = z.object({
   HERMES_TOPOLOGY: z.enum(['shared', 'per_profile']).default('per_profile'),
   HERMES_PROFILE_URL_TEMPLATE: z.string().default('http://hermes-{profile}:8642'),
   HERMES_PROFILE_URL_MAP: profileUrlMap,
+  HERMES_A2A_PROFILE_URL_TEMPLATE: a2aTemplate,
+  HERMES_A2A_PROFILE_URL_MAP: profileUrlMap.refine(value => Object.values(value).every(isHttpOrigin), 'A2A URLs must be HTTP(S) origins without credentials, paths or queries.'),
   HERMES_KEY_SECRET: z.string().min(32),
   HERMES_HOME: z.string().default('/var/lib/hermes'),
   HERMES_CLI: z.string().default('hermes'),
@@ -98,6 +111,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       topology: parsed.HERMES_TOPOLOGY,
       profileUrlTemplate: parsed.HERMES_PROFILE_URL_TEMPLATE,
       profileUrls: parsed.HERMES_PROFILE_URL_MAP,
+      a2aProfileUrlTemplate: parsed.HERMES_A2A_PROFILE_URL_TEMPLATE,
+      a2aProfileUrls: parsed.HERMES_A2A_PROFILE_URL_MAP,
+      pilotUserIds: parsed.APT_PILOT_USER_IDS,
       keySecret: parsed.HERMES_KEY_SECRET,
       home: parsed.HERMES_HOME,
       cli: parsed.HERMES_CLI,

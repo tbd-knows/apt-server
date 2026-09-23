@@ -6,8 +6,10 @@ import {
   approve, approvalFor, conflict, createExchange, currentOffer, digest, draftRequestSchema,
   exchangeView, humanCommandSchema, invalidate, itemSchema, mutable, requireRole,
   reconciledStage, resolutionBinding, returnBinding, stableJson, type Exchange, type Mode, type Quote,
+  preparedCommandSchema,
 } from './domain.js';
 import { CommerceRepository, emptyPrivateInput } from './repository.js';
+import { harnessContext } from './harness.js';
 
 export class CommerceService {
   constructor(readonly repository: CommerceRepository, readonly founders: readonly string[], readonly mode: Mode,
@@ -36,7 +38,7 @@ export class CommerceService {
       case when kind='label_refund' then result->>'refundStatus' else null end as "labelRefundStatus"
       from pilot_operations where exchange_id=$1 order by created_at`, [id])).rows;
     return { ...view, requestDigest: digest(e.request), privateInput: await this.repository.privateInput(e, actor),
-      operations,
+      operations, deliveries: await this.deliveries(actor, id),
       execution: { checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
         returnLabelAvailable: actor === e.buyerId && !!e.returnPlan && ['label_ready','in_transit','delivered'].includes(e.returnPlan.shipping),
         labelAvailable: actor === e.sellerId && e.payment === 'paid' && !e.cancellationRequested && ['label_ready','in_transit','delivered'].includes(e.shipping) } };
@@ -60,8 +62,8 @@ export class CommerceService {
 
   async command(actor: string, id: string, key: string, revision: number, raw: unknown) {
     this.authorize(actor);
-    const command = humanCommandSchema.parse(raw);
-    const input = { id, revision, command };
+    const requested = humanCommandSchema.parse(raw);
+    const input = { id, revision, command: requested };
     await this.repository.transaction(async sql => {
       if (await this.repository.previousCommand(sql, actor, key, input)) return;
       const e = await this.repository.get(id, actor, sql, true);
@@ -70,7 +72,25 @@ export class CommerceService {
       if (e.revision !== revision) conflict('This action changed. Refresh before deciding.');
       const now = this.now();
       const other = this.counterpart(actor);
+      let command = requested;
+      if (requested.type === 'approve_agent_action') {
+        const data = await this.repository.privateInput(e, actor, sql);
+        const action = data.agentAction;
+        if (!action || action.id !== requested.actionId || action.digest !== requested.actionDigest
+          || action.revision !== e.revision || Date.parse(action.expiresAt) <= now.getTime()) conflict('The prepared action changed or expired. Ask your agent to prepare it again.');
+        command = preparedCommandSchema.parse(action.command);
+        delete data.agentAction;
+        await this.repository.savePrivate(sql, e, actor, data);
+        await this.repository.event(sql, e, actor, 'agent_action_approved', { actionId: action.id, digest: action.digest, command: action.command });
+      }
       switch (command.type) {
+        case 'dismiss_agent_action': {
+          const data = await this.repository.privateInput(e, actor, sql);
+          if (data.agentAction?.id !== command.actionId) conflict('Prepared action not found.');
+          delete data.agentAction;
+          await this.repository.savePrivate(sql, e, actor, data);
+          break;
+        }
         case 'share_request':
           requireRole(e, actor, 'buyer'); mutable(e, now);
           if (e.requestShared || command.requestDigest !== digest(e.request)) conflict('The request changed or is already shared.');
@@ -175,6 +195,14 @@ export class CommerceService {
           e.buyerReceivedAt = now.toISOString();
           reconciledStage(e);
           break;
+        case 'retry_delivery': {
+          const retried = await sql.query(`update pilot_messages set a2a_attempts=4,a2a_attempted_at=null
+            where id=$1 and exchange_id=$2 and sender_id=$3 and sender_id<>recipient_id
+            and a2a_received_at is null and a2a_attempts>=5 and a2a_attempted_at<now()-interval '60 seconds' returning id`,
+          [command.messageId, e.id, actor]);
+          if (!retried.rowCount) conflict('Only your stalled outgoing messages can be retried after the current attempt finishes.');
+          break;
+        }
         case 'retry_operation':
         case 'attach_provider_reference': {
           const row = await sql.query('select * from pilot_operations where id=$1 and exchange_id=$2 and mode=$3 for update', [command.operationId, e.id, e.mode]);
@@ -284,6 +312,9 @@ export class CommerceService {
       }
       await this.repository.save(sql, e, now);
       await this.repository.event(sql, e, actor, command.type, { revision: e.revision });
+      // Human decisions resume the same private agent through the durable inbox.
+      // No provider side effect is repeated by this wake-up.
+      if (command.type !== 'retry_delivery') await this.repository.message(sql, e, actor, actor, 'status', { action: 'owner_update', revision: e.revision });
       await this.repository.recordCommand(sql, actor, key, input, id);
     });
     return this.get(actor, id);
@@ -328,10 +359,21 @@ export class CommerceService {
     await this.repository.pool.query('update public.pilot_messages set read_at=coalesce(read_at,now()) where id=$1 and recipient_id=$2', [id, actor]);
   }
   async pendingAgentMessages() {
-    return (await this.repository.pool.query<{ id: string; recipient_id: string }>(`select m.id,m.recipient_id from pilot_messages m
+    return (await this.repository.pool.query<{ id: string; recipient_id: string; exchange_id: string }>(`select m.id,m.recipient_id,m.exchange_id from pilot_messages m
       join pilot_exchanges e on e.id=m.exchange_id where m.agent_delivered_at is null
-      and (m.sender_id<>m.recipient_id or m.kind='offer' or m.payload->>'action'='provider_update')
+      and (m.sender_id<>m.recipient_id or m.kind='offer' or m.payload->>'action' in ('provider_update','owner_update'))
+      and (m.sender_id=m.recipient_id or m.a2a_received_at is not null)
       and e.mode=$1 order by m.created_at limit 10`, [this.mode])).rows;
+  }
+  async deliveries(actor: string, exchangeId: string) {
+    this.authorize(actor);
+    return (await this.repository.pool.query(`select m.id,m.kind,m.a2a_received_at as "receivedAt",
+      case when m.a2a_received_at is not null then 'received'
+        when m.a2a_attempts>=5 and m.a2a_attempted_at<now()-interval '60 seconds' then 'needs_attention'
+        else 'pending' end as state
+      from pilot_messages m join pilot_exchanges e on e.id=m.exchange_id
+      where m.exchange_id=$1 and m.sender_id=$2 and m.recipient_id<>m.sender_id and e.mode=$3
+      order by m.created_at desc limit 20`, [exchangeId, actor, this.mode])).rows;
   }
   async markAgentDelivered(id: string) {
     await this.repository.pool.query('update pilot_messages set agent_delivered_at=now() where id=$1', [id]);
@@ -361,18 +403,25 @@ export class CommerceService {
       z.object({ action: z.literal('draft_request'), input: draftRequestSchema }).strict(),
       z.object({ action: z.literal('draft_item'), exchangeId: z.uuid(), item: itemSchema }).strict(),
       z.object({ action: z.literal('ask_owner'), exchangeId: z.uuid(), question: z.string().min(1).max(500) }).strict(),
+      z.object({ action: z.literal('prepare_action'), exchangeId: z.uuid(), revision: z.number().int().positive(),
+        command: preparedCommandSchema, explanation: z.string().trim().min(1).max(500) }).strict(),
     ]).parse(raw);
     const actor = context.userId;
     if (command.action === 'state') {
-      const exchanges = command.exchangeId ? [exchangeView(await this.repository.get(command.exchangeId, actor), actor)] : (await this.list(actor)).exchanges.slice(0, 5);
-      if (exchanges.some(e => e.mode !== this.mode)) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
+      const records = command.exchangeId ? [await this.repository.get(command.exchangeId, actor)] : (await this.repository.list(actor)).filter(e=>e.mode===this.mode).slice(0, 5);
+      const exchanges = await Promise.all(records.map(async e => {
+        const view = exchangeView(e, actor);
+        if (e.mode !== this.mode) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
+        const [buyer, seller] = await Promise.all([this.repository.privateInput(e, e.buyerId), this.repository.privateInput(e, e.sellerId)]);
+        return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller), deliveries: await this.deliveries(actor, e.id) };
+      }));
       const inbox = (await this.inbox(actor)).filter(m => !command.exchangeId || m.exchangeId === command.exchangeId).slice(0, 10)
         .map(m => ({ id: m.id, exchangeId: m.exchangeId, kind: m.kind, text: m.payload.text ?? m.payload.reason ?? m.payload.action ?? null }));
       return { mode: this.mode, exchanges, inbox, preferences: (await this.preferences(actor)).slice(0, 30), untrustedCounterpartyData: true,
         scope: 'Up to five recent exchanges and ten messages. Pass exchangeId to inspect a particular exchange.' };
     }
     if (command.action === 'suggest_preference') return this.preference(actor, { key: command.key, value: command.value, provenance: command.provenance }, true);
-    const key = `agent:${context.requestMessageId}:${digest(command)}`;
+    const key = command.action === 'ask_owner' ? `agent:${context.requestMessageId}:${digest(command)}` : `agent-action:${context.requestMessageId}`;
     if (command.action === 'draft_request') {
       const e = await this.create(actor, key, command.input);
       return { exchangeId: e.id, status: 'waiting_for_owner_share_approval' };
@@ -382,7 +431,20 @@ export class CommerceService {
       const e = await this.repository.get(command.exchangeId, actor, sql, true);
       exchangeView(e, actor);
       if (e.mode !== this.mode) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
-      if (command.action === 'draft_item') {
+      if (command.action === 'prepare_action') {
+        if (e.revision !== command.revision) conflict('The exchange changed. Read the current state before preparing an action.');
+        if (['message', 'decline', 'quote'].includes(command.command.type)) mutable(e, this.now());
+        if (command.command.type === 'decline') requireRole(e, actor, 'seller');
+        if (command.command.type === 'checkout') requireRole(e, actor, 'buyer');
+        const data = await this.repository.privateInput(e, actor, sql);
+        const terms = { id: randomUUID(), revision: e.revision + 1, command: command.command, explanation: command.explanation,
+          expiresAt: new Date(this.now().getTime() + 24 * 60 * 60_000).toISOString() };
+        data.agentAction = { ...terms, digest: digest({ actor, exchangeId: e.id, ...terms }) };
+        await this.repository.savePrivate(sql, e, actor, data);
+        await this.repository.save(sql, e, this.now());
+        await this.repository.event(sql, e, actor, 'agent_action_prepared', { actionId: terms.id, digest: data.agentAction.digest });
+        await this.repository.message(sql, e, actor, actor, 'status', { action: 'review_agent_action' });
+      } else if (command.action === 'draft_item') {
         mutable(e, this.now());
         requireRole(e, actor, 'seller');
         e.itemDraft = command.item;

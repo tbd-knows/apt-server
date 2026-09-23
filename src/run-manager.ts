@@ -72,7 +72,7 @@ export class RunManager {
       })
       .finally(() => {
         this.tasks.delete(turn.run.id);
-        this.activeContexts.delete(instance.hermesProfileName);
+        if (this.activeContexts.get(instance.hermesProfileName)?.context.runId === turn.run.id) this.activeContexts.delete(instance.hermesProfileName);
       });
     this.tasks.set(turn.run.id, task);
   }
@@ -80,6 +80,15 @@ export class RunManager {
   private async execute(userId: string, instance: AgentInstance, turn: CreatedTurn, channel: RunChannel, context: RunContext) {
     let accumulated = '';
     let lastPersistedAt = 0;
+    let reconciled = false;
+    const reconcile = async () => {
+      if (reconciled) return;
+      reconciled = true;
+      if (this.activeContexts.get(instance.hermesProfileName)?.context.runId === turn.run.id) this.activeContexts.delete(instance.hermesProfileName);
+      try { await this.runtime.reconcile?.(instance, context); } catch (error) {
+        this.logger.error({ error, runId: turn.run.id, userId }, 'Private memory reconciliation failed');
+      }
+    };
     try {
       const submitted = await this.runtime.submit(instance, turn.requestMessage.content, { context });
       const current = await this.repository.getRun(userId, turn.run.id);
@@ -105,14 +114,17 @@ export class RunManager {
             lastPersistedAt = now;
           }
         } else if (event.type === 'completed') {
+          await reconcile();
           const run = await this.repository.completeRun(userId, turn.run.id, event.output || accumulated);
           channel.publish({ type: 'run.completed', run });
           return;
         } else if (event.type === 'cancelled') {
+          await reconcile();
           const run = await this.repository.cancelRun(userId, turn.run.id, accumulated);
           channel.publish({ type: 'run.cancelled', run });
           return;
         } else if (event.type === 'failed') {
+          await reconcile();
           const run = await this.repository.failRun(userId, turn.run.id, 'UPSTREAM_FAILED');
           channel.publish({ type: 'run.failed', run });
           return;
@@ -120,6 +132,7 @@ export class RunManager {
       }
 
       const state = await this.runtime.getState(instance, submitted.runId);
+      await reconcile();
       if (state.status === 'completed') {
         const run = await this.repository.completeRun(userId, turn.run.id, state.output ?? accumulated);
         channel.publish({ type: 'run.completed', run });
@@ -132,12 +145,11 @@ export class RunManager {
       }
     } catch (error) {
       this.logger.error({ error, runId: turn.run.id, userId }, 'Hermes run failed');
+      await reconcile();
       const run = await this.repository.failRun(userId, turn.run.id, 'UPSTREAM_FAILED');
       channel.publish({ type: 'run.failed', run });
     } finally {
-      try { await this.runtime.reconcile?.(instance, context); } catch (error) {
-        this.logger.error({ error, runId: turn.run.id, userId }, 'Private memory reconciliation failed');
-      }
+      await reconcile();
     }
   }
 

@@ -1,0 +1,34 @@
+import type { Exchange, PrivateInput } from './domain.js';
+
+/** Deterministic prerequisites for the model's next decision. A plan or
+ * recommendation cannot change these facts or establish provider outcomes. */
+export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, buyer: PrivateInput, seller: PrivateInput) {
+  const buyerRole = actor === e.buyerId;
+  const missing: string[] = [];
+  if (!e.requestShared) missing.push('owner_share_approval');
+  else if (!e.item) missing.push(buyerRole ? 'seller_item_confirmation' : 'ask_owner_about_item');
+  if (e.item && e.payment === 'unpaid') {
+    if (!mine.address) missing.push('owner_private_address_form');
+    if (!(buyerRole ? seller.address : buyer.address)) missing.push('counterparty_private_address');
+    if (!seller.packing) missing.push(buyerRole ? 'seller_packing' : 'owner_packing');
+    if (seller.packing && !seller.packing.canPrint) missing.push('supported_no_printer_fulfillment');
+    if (!e.offers.length || e.stage === 'preparing_offer') missing.push('verified_fulfillment_option');
+    if (e.stage === 'offered' && !e.approvals.some(a=>a.actorId===actor)) missing.push('owner_exact_offer_approval');
+    if (e.stage === 'offered' && e.approvals.length < 2) missing.push('both_exact_offer_approvals');
+  }
+  if (e.payment === 'pending') missing.push(buyerRole ? 'owner_hosted_payment' : 'confirmed_buyer_payment');
+  if (e.payment === 'paid' && e.shipping === 'label_pending') missing.push('provider_postage_confirmation');
+  if (e.shipping === 'label_ready' && !e.sellerDroppedAt) missing.push(buyerRole ? 'seller_physical_handoff' : 'owner_physical_handoff');
+  if (e.shipping === 'in_transit') missing.push('carrier_delivery');
+  if (e.shipping === 'delivered' && !e.buyerReceivedAt) missing.push(buyerRole ? 'owner_receipt_confirmation' : 'buyer_receipt_confirmation');
+  if (e.problem || e.stage === 'needs_attention') missing.push('resolution');
+  const closed = ['cancelled', 'declined', 'expired', 'completed'].includes(e.stage);
+  return {
+    missing: closed ? [] : missing, closed,
+    privateBudget: mine.budget,
+    inputs: { ownerAddressProvided: !!mine.address, bothAddressesProvided: !!buyer.address && !!seller.address,
+      sellerPackingProvided: !!seller.packing, sellerCanPrint: seller.packing?.canPrint ?? null },
+    preparedAction: mine.agentAction ?? null,
+    authority: 'Prepare one specific action for review, then stop. Human approvals and provider facts are checked independently.',
+  };
+}

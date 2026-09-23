@@ -87,7 +87,7 @@ export class StripeProvider {
     configured(this.config.publicUrl, this.config.taxTreatment, this.config.subsidy);
     const destination = await this.accountReady(exchange.sellerId);
     const response = await this.call('checkout/sessions', {
-      mode: 'payment', 'payment_method_types[0]': 'card', client_reference_id: exchange.id,
+      mode: 'payment', 'payment_method_types[0]': 'card', 'payment_method_types[1]': 'link', client_reference_id: exchange.id,
       'line_items[0][price_data][currency]': 'usd', 'line_items[0][price_data][unit_amount]': String(offer.buyerTotal),
       'line_items[0][price_data][product_data][name]': `TBD approved offer ${offer.version}`, 'line_items[0][quantity]': '1',
       'payment_intent_data[transfer_data][destination]': destination,

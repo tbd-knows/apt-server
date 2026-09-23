@@ -1,9 +1,17 @@
 # Two-founder commerce pilot (TBD-12)
 
-Engineering implementation and deterministic validation are available for review.
-The founders reported that Stripe, EasyPost and FedEx credentials are not yet
-configured. No sandbox payment, real postage purchase or live transaction has
-been verified. No live migration was applied.
+The agent-led rework is in progress; both PRs remain Draft. Hermes native A2A
+delivery and durable private action preparation are implemented and tested with
+two actual isolated gateways, Postgres and a deterministic model. See
+[A2A implementation and evidence](hermes-a2a.md). This does not establish the
+complete intelligent discovery/fulfillment experience.
+
+Stripe is the only mandatory commerce-provider integration. The EasyPost/FedEx
+adapter documented below is an optional existing execution path, not the target
+product's required setup. Dynamic discovery, capability inspection, per-user
+connection and funding/execution of alternative fulfillment are still being
+implemented. No provider credentials are configured, and no sandbox payment,
+real postage purchase, live migration or live transaction has been verified.
 
 ## Authority and baseline
 
@@ -28,7 +36,15 @@ The server owns authentication, the two-UUID allowlist, totals, versions,
 approvals, inventory reservations and provider facts. Human HTTP commands and
 model tools have different capabilities. Models cannot approve, spend, purchase
 postage, or submit provider facts. Private budget/address input is separate from
-the shared exchange and is excluded from counterparty/model projections.
+the shared exchange. Only the owner's agent receives the owner's budget; full
+addresses are excluded from model projections and counterparties' private data.
+
+An agent can prepare one precise action per turn for its owner to review. The
+draft persists privately with an actor-bound digest, exchange revision and
+expiry. Human approval executes through the same guarded command path as a
+direct action; it cannot bypass offer approval or payment checks. Human decisions
+produce durable owner wake-ups; A2A messages wake only their recipients. A chat
+turn reconciles private memory before completing and permitting a follow-up.
 
 Forward migrations add exchange aggregates, quantity-one item reservations,
 owner-private inputs/preferences, typed messages/action ledger, approvals,
@@ -70,7 +86,7 @@ Founders must confirm location, eligibility and tax treatment before live mode.
 | Platform operator | Configure Stripe sandbox/live platform and webhook | Account/mode verification; signed event delivery |
 | Each seller | Complete hosted Connect onboarding | Charges/transfers enabled; payout status visible |
 | Both founders | Confirm tax treatment and processing subsidy | Disclosed exact offer economics |
-| Platform operator | Configure EasyPost/carrier and location credentials | Real eligible rate, PDF/printing path and compatible drop-off |
+| Agent and participating founder | Discover a suitable service and authorize a supported connection when needed | Actual capabilities, eligible rate, funding, artifact and compatible handoff; fixed EasyPost/FedEx setup is optional |
 | Bruk (first seller) | Pack, accept exact sale/postage, physically drop off | Carrier acceptance, separately from seller report |
 | Kebede (first buyer) | Approve/pay, receive or report a problem | Provider payment, carrier delivery, buyer receipt |
 
@@ -87,7 +103,9 @@ human review and live completion evidence exists.
 2. Review the forward migration `20260923090946_pilot_commerce.sql` against the
    chosen environment, back up, and apply it through the normal migration process.
    Never run the disposable fixture scripts against a shared/live database.
-   The server requires all seven migrations before starting commerce.
+   Apply `20260923125200_hermes_a2a_delivery.sql` as well. The server requires all
+   eight migrations before starting commerce. Reprovision both profiles to install
+   the commerce A2A plugin, then restart the gateways and server.
 3. Create a **private** Supabase Storage bucket named by `APT_PHOTO_BUCKET`
    (default `pilot-photos`), maximum 5 MiB, JPEG/PNG only. Keep direct client
    Storage policies absent. Only the server service credential uploads/downloads.
@@ -106,7 +124,12 @@ human review and live completion evidence exists.
    account. Confirm US/USD eligibility, requested transfers capability, charges
    enabled, bank details and access to automatic payout reconciliation. The
    adapter uses Stripe API `2025-02-24.acacia` and checks platform identity before
-   creating Checkout. Account readiness is visible in Profile.
+   creating Checkout. Sessions explicitly include `card` and `link` payment
+   methods following [Stripe's Link guide](https://docs.stripe.com/payments/link/checkout-link).
+   Enable Link in the relevant Stripe Dashboard payment-method configuration.
+   Link availability and eligible funding sources remain Stripe-controlled;
+   verify the actual hosted flow with sandbox credentials before live acceptance.
+   Link does not replace seller Connect onboarding. Account readiness is visible in Profile.
 6. Add a Stripe endpoint at `APT_PUBLIC_URL/webhooks/stripe`, subscribe to
    `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
    `checkout.session.async_payment_failed`, and `checkout.session.expired` in the
@@ -114,13 +137,13 @@ human review and live completion evidence exists.
    retrieval; their bodies never directly establish payment. Refund/transfer/
    dispute state is also checked by polling the canonical payment. Connected
    payout state is retrieved under the seller's account separately.
-7. Configure `EASYPOST_API_KEY`, `EASYPOST_USER_ID`, and the eligible
+7. **Optional legacy EasyPost execution path only:** configure `EASYPOST_API_KEY`, `EASYPOST_USER_ID`, and the eligible
    `EASYPOST_CARRIER_ACCOUNT_ID`. Set an EasyPost webhook with an HMAC secret at
    `APT_PUBLIC_URL/webhooks/easypost`; put that secret in `EASYPOST_WEBHOOK_SECRET`.
    Keep EasyPost test versus production credentials consistent with the app mode.
    Confirm the account really returns a FedEx `FEDEX_GROUND` USD rate and printable
    PDF for the packed item; unsupported service fails visibly.
-8. Configure `FEDEX_CLIENT_ID`/`FEDEX_CLIENT_SECRET` with Locations access in the
+8. **Optional legacy FedEx location adapter only:** configure `FEDEX_CLIENT_ID`/`FEDEX_CLIENT_SECRET` with Locations access in the
    same chosen environment. The adapter queries the manually entered origin
    postcode and selects a staffed location with Ground drop-off/service evidence.
    Confirm sandbox fixture responses versus actual live location availability.

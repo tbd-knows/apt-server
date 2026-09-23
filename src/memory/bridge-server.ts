@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { MEMORY_LIMITS, type MemoryToolName } from './domain.js';
-import { draftRequestSchema, itemSchema } from '../commerce/domain.js';
+import { draftRequestSchema, itemSchema, preparedCommandSchema } from '../commerce/domain.js';
 
 const internalUrl = z.url().parse(process.env.APT_INTERNAL_URL).replace(/\/$/, '');
 const bridgeToken = z.string().min(32).parse(process.env.APT_BRIDGE_TOKEN);
@@ -38,11 +38,12 @@ registerTool('apt_update_private_artifact', 'Update the current user’s private
   expected_revision: z.string().regex(/^\d+$/),
 });
 
-registerTool('apt_commerce', 'Read your commerce inbox/state, prepare a request or item for owner review, or ask your owner a question. All drafts are private until a human approves sharing in the action inbox. Cannot approve, pay, buy labels or set provider facts. Stop and wait after preparing an owner action.', {
-  action: z.enum(['state', 'draft_request', 'draft_item', 'ask_owner', 'suggest_preference']),
+registerTool('apt_commerce', 'Read durable commerce state and missing prerequisites. Prepare a request, item, or exact next command for owner review, or ask your owner a question. prepare_action requires the current revision and a supported command. Drafts are private until an owner confirmation. Cannot approve, pay, buy labels or set provider facts. Stop after preparing one action; resume from state after human input.', {
+  action: z.enum(['state', 'draft_request', 'draft_item', 'ask_owner', 'suggest_preference', 'prepare_action']),
   input: draftRequestSchema.optional(), exchangeId: z.uuid().optional(),
   item: itemSchema.optional(), question: z.string().min(1).max(500).optional(),
   key: z.string().optional(), value: z.string().optional(), provenance: z.string().optional(),
+  revision: z.number().int().positive().optional(), command: preparedCommandSchema.optional(), explanation: z.string().min(1).max(500).optional(),
 });
 
 await server.connect(new StdioServerTransport());

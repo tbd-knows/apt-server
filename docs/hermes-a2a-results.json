@@ -1,0 +1,19 @@
+{
+  "hermesVersion": "v2026.8.19",
+  "transport": "native Hermes A2A adapter and protocol helpers",
+  "processes": "two isolated gateways",
+  "database": "disposable PostgreSQL",
+  "model": "deterministic fixture; not live-model acceptance",
+  "agentCards": "pass",
+  "approvedInquiryAndDecline": "pass",
+  "receiverPrivateWake": "pass",
+  "wrongKeyAndForeignMessage": "pass",
+  "hostilePeerDoesNotInvokeModel": "pass",
+  "receiptNoPrivateOutput": "pass",
+  "duplicateNoSecondOwnerTurn": "pass",
+  "restartPendingDelivery": "pass",
+  "privateModelMcpPreparation": "pass",
+  "humanDecisionRequired": "pass",
+  "buyerPrivateCanariesAbsentFromSellerModel": "pass",
+  "testedAt": "2026-09-23T21:58:39.725Z"
+}
