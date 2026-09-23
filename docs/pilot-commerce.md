@@ -2,15 +2,17 @@
 
 The agent-led rework is in progress; both PRs remain Draft. Hermes native A2A
 delivery and durable private action preparation are implemented and tested with
-two actual isolated gateways, Postgres and a deterministic model. See
+two actual isolated gateways, Postgres and a deterministic model. Owner-scoped
+service research now runs through the gateway using Hermes's keyless search
+provider; source reads are bounded public HTTPS requests. See
 [A2A implementation and evidence](hermes-a2a.md). This does not establish the
 complete intelligent discovery/fulfillment experience.
 
 Stripe is the only mandatory commerce-provider integration. The EasyPost/FedEx
 adapter documented below is an optional existing execution path, not the target
-product's required setup. Dynamic discovery, capability inspection, per-user
-connection and funding/execution of alternative fulfillment are still being
-implemented. No provider credentials are configured, and no sandbox payment,
+product's required setup. Dynamic source discovery is implemented; actual MCP/API
+capability inspection, per-user connection and funding/execution of alternative
+fulfillment are still being implemented. No provider credentials are configured, and no sandbox payment,
 real postage purchase, live migration or live transaction has been verified.
 
 ## Authority and baseline
@@ -104,8 +106,12 @@ human review and live completion evidence exists.
    chosen environment, back up, and apply it through the normal migration process.
    Never run the disposable fixture scripts against a shared/live database.
    Apply `20260923125200_hermes_a2a_delivery.sql` as well. The server requires all
-   eight migrations before starting commerce. Reprovision both profiles to install
+   nine migrations, including `20260923220633_agent_service_research.sql`, before
+   starting commerce. Reprovision both profiles to install
    the commerce A2A plugin, then restart the gateways and server.
+   On a host installation, install `ddgs==9.16.0` into that Hermes Python
+   environment; the container image includes it. This search path needs no API
+   credential. Its upstream availability/rate limits still apply.
 3. Create a **private** Supabase Storage bucket named by `APT_PHOTO_BUCKET`
    (default `pilot-photos`), maximum 5 MiB, JPEG/PNG only. Keep direct client
    Storage policies absent. Only the server service credential uploads/downloads.

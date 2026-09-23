@@ -10,8 +10,10 @@ import {
 } from './domain.js';
 import { CommerceRepository, emptyPrivateInput } from './repository.js';
 import { harnessContext } from './harness.js';
+import { CommerceResearch, researchInputSchema } from './research.js';
 
 export class CommerceService {
+  get research() { return new CommerceResearch(this); }
   constructor(readonly repository: CommerceRepository, readonly founders: readonly string[], readonly mode: Mode,
     private readonly now: () => Date = () => new Date()) {
     if (founders.length !== 2 || new Set(founders).size !== 2 || founders.some(id => !z.uuid().safeParse(id).success)) {
@@ -38,7 +40,7 @@ export class CommerceService {
       case when kind='label_refund' then result->>'refundStatus' else null end as "labelRefundStatus"
       from pilot_operations where exchange_id=$1 order by created_at`, [id])).rows;
     return { ...view, requestDigest: digest(e.request), privateInput: await this.repository.privateInput(e, actor),
-      operations, deliveries: await this.deliveries(actor, id),
+      operations, deliveries: await this.deliveries(actor, id), research: await this.research.list(actor,id),
       execution: { checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
         returnLabelAvailable: actor === e.buyerId && !!e.returnPlan && ['label_ready','in_transit','delivered'].includes(e.returnPlan.shipping),
         labelAvailable: actor === e.sellerId && e.payment === 'paid' && !e.cancellationRequested && ['label_ready','in_transit','delivered'].includes(e.shipping) } };
@@ -84,6 +86,20 @@ export class CommerceService {
         await this.repository.event(sql, e, actor, 'agent_action_approved', { actionId: action.id, digest: action.digest, command: action.command });
       }
       switch (command.type) {
+        case 'research_area': {
+          mutable(e,now);
+          const data = await this.repository.privateInput(e,actor,sql);
+          data.discoveryPostcode = command.postcode;
+          data.discoveryVersion = (data.discoveryVersion ?? 0) + 1;
+          await this.repository.savePrivate(sql,e,actor,data);
+          break;
+        }
+        case 'retry_research': {
+          const result = await sql.query(`update pilot_research set state='pending',attempts=2,lease_id=null,updated_at=now()
+            where id=$1 and exchange_id=$2 and owner_id=$3 and mode=$4 and state='failed' returning id`,[command.researchId,e.id,actor,e.mode]);
+          if (!result.rowCount) conflict('Only your failed research can be retried.');
+          break;
+        }
         case 'dismiss_agent_action': {
           const data = await this.repository.privateInput(e, actor, sql);
           if (data.agentAction?.id !== command.actionId) conflict('Prepared action not found.');
@@ -361,7 +377,7 @@ export class CommerceService {
   async pendingAgentMessages() {
     return (await this.repository.pool.query<{ id: string; recipient_id: string; exchange_id: string }>(`select m.id,m.recipient_id,m.exchange_id from pilot_messages m
       join pilot_exchanges e on e.id=m.exchange_id where m.agent_delivered_at is null
-      and (m.sender_id<>m.recipient_id or m.kind='offer' or m.payload->>'action' in ('provider_update','owner_update'))
+      and (m.sender_id<>m.recipient_id or m.kind='offer' or m.payload->>'action' in ('provider_update','owner_update','research_update'))
       and (m.sender_id=m.recipient_id or m.a2a_received_at is not null)
       and e.mode=$1 order by m.created_at limit 10`, [this.mode])).rows;
   }
@@ -405,6 +421,7 @@ export class CommerceService {
       z.object({ action: z.literal('ask_owner'), exchangeId: z.uuid(), question: z.string().min(1).max(500) }).strict(),
       z.object({ action: z.literal('prepare_action'), exchangeId: z.uuid(), revision: z.number().int().positive(),
         command: preparedCommandSchema, explanation: z.string().trim().min(1).max(500) }).strict(),
+      z.object({ action: z.literal('research'), exchangeId: z.uuid(), research: researchInputSchema }).strict(),
     ]).parse(raw);
     const actor = context.userId;
     if (command.action === 'state') {
@@ -413,7 +430,8 @@ export class CommerceService {
         const view = exchangeView(e, actor);
         if (e.mode !== this.mode) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
         const [buyer, seller] = await Promise.all([this.repository.privateInput(e, e.buyerId), this.repository.privateInput(e, e.sellerId)]);
-        return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller), deliveries: await this.deliveries(actor, e.id) };
+        return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller),
+          deliveries: await this.deliveries(actor, e.id), research: await this.research.list(actor,e.id) };
       }));
       const inbox = (await this.inbox(actor)).filter(m => !command.exchangeId || m.exchangeId === command.exchangeId).slice(0, 10)
         .map(m => ({ id: m.id, exchangeId: m.exchangeId, kind: m.kind, text: m.payload.text ?? m.payload.reason ?? m.payload.action ?? null }));
@@ -421,6 +439,7 @@ export class CommerceService {
         scope: 'Up to five recent exchanges and ten messages. Pass exchangeId to inspect a particular exchange.' };
     }
     if (command.action === 'suggest_preference') return this.preference(actor, { key: command.key, value: command.value, provenance: command.provenance }, true);
+    if (command.action === 'research') return this.research.request(actor,command.exchangeId,command.research);
     const key = command.action === 'ask_owner' ? `agent:${context.requestMessageId}:${digest(command)}` : `agent-action:${context.requestMessageId}`;
     if (command.action === 'draft_request') {
       const e = await this.create(actor, key, command.input);

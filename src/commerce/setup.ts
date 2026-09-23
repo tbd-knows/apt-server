@@ -14,7 +14,8 @@ export function setupRoutes(app: FastifyInstance, commerce: CommerceService, str
       paymentConfigured: !!(config.stripeKey && config.stripeAccount && config.stripeWebhookSecret && config.publicUrl),
       shippingConfigured: !!(config.easyPostKey && config.easyPostUser && config.carrierAccount && config.easyPostWebhookSecret),
       locationsConfigured: !!(config.fedexKey && config.fedexSecret), economicsConfigured: !!(config.taxTreatment && config.subsidy),
-      supportedScope: 'One physical item, US domestic, USD, card, FedEx Ground with a printed PDF',
+      fulfillment: 'agent_research', mandatoryCommerceProvider: 'stripe',
+      supportedScope: 'One physical item, US domestic, USD. Stripe-hosted payment with Link. Shipping depends on a verified service for the exchange.',
     };
   });
   app.post('/v1/commerce/onboarding', { preHandler: authenticate }, async request => {

@@ -25,6 +25,8 @@
     "test:hermes-a2a": "node --import tsx scripts/hermes-a2a-check.ts",
     "test:a2a-db": "node --import tsx scripts/a2a-db-check.ts",
     "test:harness-db": "node --import tsx scripts/harness-db-check.ts",
+    "test:research-db": "node --import tsx scripts/research-db-check.ts",
+    "test:research-safety": "python3 scripts/research-safety-check.py",
     "test:local-db": "node --import tsx scripts/local-db-check.ts",
     "test:commerce-db": "node --import tsx scripts/commerce-db-check.ts",
     "test:commerce-worker": "node --import tsx scripts/commerce-worker-check.ts"

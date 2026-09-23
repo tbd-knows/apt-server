@@ -1,6 +1,6 @@
 # Hermes A2A commerce boundary
 
-The pilot uses Hermes v2026.8.19's native A2A adapter, Agent Card, protocol helpers and task handling. `hermes-plugins/tbd-commerce-a2a` specializes the inbound task handler and adds a database-backed outgoing delivery loop. This is the first part of the agent-led rework; discovery, service connection and dynamic fulfillment remain under implementation.
+The pilot uses Hermes v2026.8.19's native A2A adapter, Agent Card, protocol helpers and task handling. `hermes-plugins/tbd-commerce-a2a` specializes the inbound task handler and adds a database-backed outgoing delivery loop. [Private service research](agent-service-research.md) runs through the same gateway; service connection and dynamic fulfillment remain under implementation.
 
 ## Private owner turns and shared messages
 

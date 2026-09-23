@@ -89,10 +89,10 @@ try {
   const client = await pool.connect();
   try {
     await client.query('set role authenticated');
-    for (const table of ['pilot_exchanges','pilot_private_inputs','pilot_items','pilot_messages','pilot_setup_operations','pilot_approvals','pilot_operations','pilot_events','pilot_commands','pilot_assets','pilot_preferences']) {
+    for (const table of ['pilot_exchanges','pilot_private_inputs','pilot_items','pilot_messages','pilot_setup_operations','pilot_approvals','pilot_operations','pilot_events','pilot_commands','pilot_assets','pilot_preferences','pilot_research']) {
       await assert.rejects(client.query(`select * from public.${table}`), /permission denied/);
     }
   } finally { await client.query('reset role'); client.release(); }
-  assert.equal((await pool.query("select count(*)::int n from pg_class where relnamespace='public'::regnamespace and relname like 'pilot_%' and relkind='r' and relrowsecurity and relforcerowsecurity")).rows[0].n, 11);
+  assert.equal((await pool.query("select count(*)::int n from pg_class where relnamespace='public'::regnamespace and relname like 'pilot_%' and relkind='r' and relrowsecurity and relforcerowsecurity")).rows[0].n, 12);
   console.log('PASS: real PostgreSQL request/share/decline/restart/offer/approval/privacy/reservation/idempotency/cancel/RLS scenarios (provider fixtures only).');
 } finally { await pool.end(); }

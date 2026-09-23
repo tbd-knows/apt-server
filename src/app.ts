@@ -171,6 +171,8 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
     };
     app.get('/internal/a2a/outbox', async request => transport.outbox(a2aProfile(request)));
     app.post('/internal/a2a/receive', async request => transport.receive(a2aProfile(request), request.body));
+    app.get('/internal/a2a/research/outbox', async request => dependencies.commerceService!.research.outbox(a2aProfile(request)));
+    app.post('/internal/a2a/research/complete', async request => dependencies.commerceService!.research.complete(a2aProfile(request),request.body));
   }
 
   app.get('/v1/chat/runs/:runId', { preHandler: authenticate }, async (request) => {

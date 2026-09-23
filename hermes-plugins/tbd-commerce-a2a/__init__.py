@@ -15,6 +15,7 @@ import urllib.request
 from gateway.config import Platform
 from plugins.platforms.a2a.adapter import A2AAdapter
 from plugins.platforms.a2a import protocol, security, tools as client
+from .research import execute as research_execute
 
 LOG = logging.getLogger(__name__)
 MESSAGE = re.compile(r"tbd-message:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\Z")
@@ -68,6 +69,7 @@ class CommerceAdapter(A2AAdapter):
         super().__init__(config)
         self.platform = Platform("tbd_commerce")
         self._outbox_task = None
+        self._research_task = None
 
     async def connect(self, **kwargs):
         # Never fall back to Hermes's unauthenticated local mode for commerce.
@@ -77,16 +79,33 @@ class CommerceAdapter(A2AAdapter):
         connected = await super().connect(**kwargs)
         if connected:
             self._outbox_task = asyncio.create_task(self._deliver_outbox())
+            self._research_task = asyncio.create_task(self._research_outbox())
         return connected
 
     async def disconnect(self):
-        if self._outbox_task:
-            self._outbox_task.cancel()
+        for task in (self._outbox_task, self._research_task):
+            if not task:
+                continue
+            task.cancel()
             try:
-                await self._outbox_task
+                await task
             except asyncio.CancelledError:
                 pass
         await super().disconnect()
+
+    async def _research_outbox(self):
+        while True:
+            try:
+                batch = await asyncio.to_thread(internal, "research/outbox")
+                for job in batch["jobs"]:
+                    result = await asyncio.to_thread(research_execute, job)
+                    await asyncio.to_thread(internal, "research/complete", {
+                        "id": job["id"], "leaseId": job["leaseId"], "result": result})
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.warning("TBD_RESEARCH_PENDING")
+            await asyncio.sleep(5)
 
     async def _deliver_outbox(self):
         while True:

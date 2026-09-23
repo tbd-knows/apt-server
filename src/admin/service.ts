@@ -100,7 +100,7 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
     await this.removeLegacyRuntimeFiles(profileName);
     const pluginDir = `${this.profileDir(profileName)}/plugins/tbd-commerce-a2a`;
     await mkdir(pluginDir, { recursive: true, mode: 0o700 });
-    for (const name of ['plugin.yaml', '__init__.py']) {
+    for (const name of ['plugin.yaml', '__init__.py', 'research.py']) {
       await copyFile(fileURLToPath(new URL(`../../hermes-plugins/tbd-commerce-a2a/${name}`, import.meta.url)), `${pluginDir}/${name}`);
     }
     const entries: [string, string][] = [

@@ -74,7 +74,7 @@ async function resetDatabase() {
   `);
   const directory = join(serverDirectory, 'supabase', 'migrations');
   const files = (await readdir(directory)).filter((name) => name.endsWith('.sql')).sort();
-  assert.equal(files.length, 8, 'Expected six historical migrations plus pilot and A2A delivery migrations.');
+  assert.equal(files.length, 9, 'Expected six historical migrations plus pilot, A2A and private service research migrations.');
   for (const file of files) await sql.query(await readFile(join(directory, file), 'utf8'));
   return files;
 }

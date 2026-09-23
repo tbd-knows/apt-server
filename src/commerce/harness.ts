@@ -29,6 +29,7 @@ export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, b
     inputs: { ownerAddressProvided: !!mine.address, bothAddressesProvided: !!buyer.address && !!seller.address,
       sellerPackingProvided: !!seller.packing, sellerCanPrint: seller.packing?.canPrint ?? null },
     preparedAction: mine.agentAction ?? null,
+    discoveryAreaProvided: !!mine.discoveryPostcode,
     authority: 'Prepare one specific action for review, then stop. Human approvals and provider facts are checked independently.',
   };
 }

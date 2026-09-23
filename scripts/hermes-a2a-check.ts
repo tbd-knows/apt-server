@@ -165,11 +165,23 @@ try {
   const inbox = await commerce.inbox(actors[0]!); assert(inbox.some(m=>m.id===decline.id));
   const ledger = await pool.query('select a2a_task_id from pilot_messages where id=any($1::uuid[])', [[message.id,decline.id]]);
   assert(ledger.rows.every(r=>r.a2a_task_id));
+  let publicResearch = 'not run';
+  if (process.env.APT_RESEARCH_NETWORK_CHECK === '1') {
+    const researchDraft = await commerce.create(actors[0]!,randomUUID(),{request:draft.request,privateBudget:937123});
+    await commerce.command(actors[0]!,researchDraft.id,randomUUID(),researchDraft.revision,{type:'research_area',postcode:'10001'});
+    const research = await commerce.research.request(actors[0]!,researchDraft.id,{kind:'nearby'});
+    await eventually(async () => (await commerce.research.list(actors[0]!,researchDraft.id)).some(r=>r.id===research.id && r.state==='ready'), 'Actual keyless public search');
+    const found = (await commerce.research.list(actors[0]!,researchDraft.id)).find(r=>r.id===research.id)!;
+    assert(found.result!.sources.length>0);
+    assert.equal(found.result!.verifiedForFulfillment,false);
+    assert(!(await commerce.research.list(actors[0]!,researchDraft.id)).some(r=>JSON.stringify(r).includes('937123')));
+    publicResearch = 'pass: actual keyless search via isolated Hermes, public sample postcode; no fulfillment verification';
+  }
   const report = { hermesVersion: 'v2026.8.19', transport: 'native Hermes A2A adapter and protocol helpers',
     processes: 'two isolated gateways', database: 'disposable PostgreSQL', model: 'deterministic fixture; not live-model acceptance',
     agentCards: 'pass', approvedInquiryAndDecline: 'pass', receiverPrivateWake: 'pass', wrongKeyAndForeignMessage: 'pass',
     hostilePeerDoesNotInvokeModel: 'pass', receiptNoPrivateOutput: 'pass', duplicateNoSecondOwnerTurn: 'pass', restartPendingDelivery: 'pass',
-    privateModelMcpPreparation: 'pass', humanDecisionRequired: 'pass', buyerPrivateCanariesAbsentFromSellerModel: 'pass', testedAt: new Date().toISOString() };
+    privateModelMcpPreparation: 'pass', humanDecisionRequired: 'pass', buyerPrivateCanariesAbsentFromSellerModel: 'pass', publicResearch, testedAt: new Date().toISOString() };
   await writeFile('docs/hermes-a2a-results.json', JSON.stringify(report,null,2)+'\n');
   process.stdout.write('PASS: actual Hermes A2A between two isolated gateways, Postgres receipts, recipient wake, duplicate/restart recovery, hostile/foreign denial. Model is deterministic.\n');
 } finally {
