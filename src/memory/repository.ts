@@ -190,7 +190,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
         `update public.claw_user_profiles set reconciliation_error = 'Runtime private artifact exceeded a size limit.' where user_id = $1`,
         [userId],
       );
-      return;
+      throw new Error('Runtime private artifact exceeded a size limit; local memory was preserved.');
     }
     const client = await this.pool.connect();
     try {
@@ -201,8 +201,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       );
       const current = profile.rows[0];
       if (!current) {
-        await client.query('rollback');
-        return;
+        throw new Error('Private profile is missing; local memory was preserved.');
       }
       const profileChanged = current.soul_text !== artifacts.soulText ||
         current.hot_user_text !== artifacts.hotUserText || current.hot_memory_text !== artifacts.hotMemoryText;

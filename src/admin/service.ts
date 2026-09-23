@@ -9,7 +9,7 @@ import { createClient } from '@supabase/supabase-js';
 import { hermesApiKey } from '../agent-runtime.js';
 import { aptBridgeToken } from '../memory/bridge-auth.js';
 import { MEMORY_TOOL_NAMES } from '../memory/domain.js';
-import { LEGACY_CLAW_MARKER_FILE, LEGACY_SHARED_SKILLS_DIRECTORY } from '../memory/materializer.js';
+import { removeLegacySharedSkills } from '../memory/legacy-cleanup.js';
 import type { AppConfig } from '../config.js';
 import type { AgentInstance } from '../domain.js';
 import { AppError } from '../errors.js';
@@ -222,14 +222,13 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
 
   /**
    * Existing profiles were provisioned with the retired browser policy plugin,
-   * a shared-skill mount, and a Claw runtime marker. Remove them so a local
-   * Hermes cache cannot keep the disabled tools alive.
+   * and a read-only shared-skill mount. Keep the Claw marker: the first
+   * memory-backed turn uses it to recover unreconciled private artifacts.
    */
   private async removeLegacyRuntimeFiles(profileName: string) {
     const directory = this.profileDir(profileName);
     await rm(`${directory}/plugins/${LEGACY_BROWSER_POLICY_PLUGIN}`, { recursive: true, force: true });
-    await rm(`${directory}/${LEGACY_SHARED_SKILLS_DIRECTORY}`, { recursive: true, force: true });
-    await rm(`${directory}/${LEGACY_CLAW_MARKER_FILE}`, { force: true });
+    await removeLegacySharedSkills(directory);
   }
 
   private async removeNonPrivateSkills(profileName: string) {

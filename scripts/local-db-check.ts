@@ -11,7 +11,7 @@
  * It refuses any database URL that is not loopback.
  */
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -186,6 +186,29 @@ try {
   results.migrationsReplayed = `pass (${migrations.length})`;
   await seedPrePivotData();
   const before = await retiredCounts();
+  // Upgrade the real old filesystem shape as well as the six-migration database.
+  const legacyRoot = join(hermesHome, 'profiles', PROFILE_A);
+  await mkdir(join(legacyRoot, 'memories'), { recursive: true });
+  await writeFile(join(legacyRoot, '.apt-claw.json'), JSON.stringify({ runtimeHash: 'a'.repeat(64) }));
+  await writeFile(join(legacyRoot, 'SOUL.md'), 'A soul: be concise');
+  await writeFile(join(legacyRoot, 'memories', 'USER.md'), 'A user cache');
+  await writeFile(join(legacyRoot, 'memories', 'MEMORY.md'), 'A recovered before pivot');
+  const legacySkill = join(legacyRoot, 'apt-shared-skills', 'commerce');
+  await mkdir(legacySkill, { recursive: true });
+  await writeFile(join(legacySkill, 'SKILL.md'), '# retired', { mode: 0o400 });
+  await chmod(legacySkill, 0o500);
+  await chmod(join(legacyRoot, 'apt-shared-skills'), 0o500);
+
+  const migrationRepository = PostgresMemoryRepository.create(databaseUrl, false);
+  try {
+    const artifacts = { soulText: '', hotUserText: '', hotMemoryText: '' };
+    await assert.rejects(migrationRepository.reconcileRuntimeArtifacts(C, artifacts), /profile is missing/);
+    await assert.rejects(migrationRepository.reconcileRuntimeArtifacts(A, { ...artifacts, hotMemoryText: 'x'.repeat(2201) }), /size limit/);
+    assert.equal((await sql.query('select hot_memory_text from public.claw_user_profiles where user_id = $1', [A])).rows[0].hot_memory_text, 'A memory cache');
+    results.failedReconciliationPreservesDatabase = 'pass';
+  } finally {
+    await migrationRepository.close();
+  }
 
   let app = await build(hermesHome);
   try {
@@ -209,6 +232,12 @@ try {
     assert.deepEqual(submittedA.options!.conversationHistory!.map((message) => message.role), ['user', 'assistant', 'user']);
     const profileRootA = join(hermesHome, 'profiles', PROFILE_A);
     assert.equal(await readFile(join(profileRootA, 'SOUL.md'), 'utf8'), 'A soul: be concise');
+    assert.match(submittedA.options!.instructions!, /A recovered before pivot/);
+    assert.equal((await sql.query('select hot_memory_text from public.claw_user_profiles where user_id = $1', [A])).rows[0].hot_memory_text, 'A recovered before pivot');
+    assert.equal(JSON.parse(await readFile(join(profileRootA, '.apt-claw-memory-backup.json'), 'utf8')).hotMemoryText, 'A recovered before pivot');
+    assert.ok(!(await readdir(profileRootA)).includes('.apt-claw.json'));
+    assert.ok(!(await readdir(profileRootA)).includes('apt-shared-skills'));
+    results.legacyFilesystemMemoryRecovered = 'pass';
     const runRow = (await sql.query('select claw_release_id, claw_mode, claw_release_checksum, status from public.agent_runs where id = $1', [runA])).rows[0];
     assert.deepEqual(runRow, { claw_release_id: null, claw_mode: null, claw_release_checksum: null, status: 'completed' });
     assert.notEqual((await sql.query('select runtime_hash from public.claw_user_profiles where user_id = $1', [A])).rows[0].runtime_hash, 'a'.repeat(64));
@@ -257,11 +286,11 @@ try {
     assert.equal((await sse(app, 'a', thirdRun)).at(-1)?.type, 'run.completed');
     const reconciled = (await sql.query('select hot_memory_text, revision from public.claw_user_profiles where user_id = $1', [A])).rows[0];
     assert.equal(reconciled.hot_memory_text, 'A memory cache + learned from Hermes');
-    assert.equal(Number(reconciled.revision), 4);
+    assert.equal(Number(reconciled.revision), 5);
     assert.match(submissions.at(-1)!.options!.instructions!, /A-LEARNED prefers white leather/);
     assert.match(submissions.at(-1)!.options!.instructions!, /learned from Hermes/);
     const actions = (await sql.query('select action from public.claw_learning_events where user_id = $1 order by created_at', [A])).rows.map((row) => row.action);
-    assert.deepEqual(actions, ['add', 'reconcile']);
+    assert.deepEqual(actions, ['reconcile', 'add', 'reconcile']);
     results.memoryReconciledAndSurvives = 'pass';
 
     const runB = await send(app, 'b', '88888888-8888-4888-8888-888888888888', 'Hi');

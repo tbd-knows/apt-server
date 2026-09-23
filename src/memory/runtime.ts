@@ -21,6 +21,7 @@ export class MemoryAgentRuntime implements AgentRuntime {
   async submit(instance: AgentInstance, input: string, options?: AgentSubmitOptions) {
     const context = options?.context;
     if (!context) throw new Error('The agent runtime requires a server-owned run context.');
+    if (context.userId !== instance.userId) throw new Error('Agent ownership mismatch.');
     return this.withProfileLock(instance.hermesProfileName, async () => {
       const runtimeArtifacts = await this.materializer.readCompletedPrivateArtifacts(instance);
       if (runtimeArtifacts) await this.service.reconcileRuntime(context.userId, runtimeArtifacts);
@@ -37,6 +38,7 @@ export class MemoryAgentRuntime implements AgentRuntime {
 
   async reconcile(instance: AgentInstance, context?: RunContext) {
     if (!context) return;
+    if (context.userId !== instance.userId) throw new Error('Agent ownership mismatch.');
     await this.withProfileLock(instance.hermesProfileName, async () => {
       const artifacts = await this.materializer.readCompletedPrivateArtifacts(instance);
       if (artifacts) await this.service.reconcileRuntime(context.userId, artifacts);

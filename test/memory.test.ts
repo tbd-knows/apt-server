@@ -143,7 +143,6 @@ describe('private artifact materializer and runtime', () => {
     await mkdir(join(profileRoot, LEGACY_SHARED_SKILLS_DIRECTORY, 'apt-commerce'), { recursive: true });
     await mkdir(join(profileRoot, 'skills', 'private.gifts'), { recursive: true });
     await writeFile(join(profileRoot, 'skills', 'private.gifts', 'SKILL.md'), '# retained\n');
-    await writeFile(join(profileRoot, LEGACY_CLAW_MARKER_FILE), '{"runtimeHash":"old"}');
     const materializer = new MemoryMaterializer(hermesHome);
     expect(await materializer.readCompletedPrivateArtifacts(owned)).toBeNull();
 

@@ -35,7 +35,19 @@ With `apt-server` and `apt-mobile` checked out beside each other and the protect
 npm run ios:stack
 ```
 
-The launcher discovers ready beta mappings, bootstraps pinned Hermes when needed, provisions or re-provisions local profiles (which also strips the retired browser plugin, shared-skill mount, and Claw marker from existing profiles), starts all per-profile gateways and Apt Server, writes only public/LAN values to the mobile's ignored `.env.local`, then builds, installs, launches, and serves the app. `Ctrl-C` shuts down the complete stack. See [the local phone stack guide](docs/local-phone-stack.md) for new-Mac setup, user selection, networking, and failure behavior.
+The launcher discovers ready beta mappings, bootstraps pinned Hermes when needed, provisions or re-provisions local profiles (which also strips the retired browser plugin and shared-skill mount from existing profiles), starts all per-profile gateways and Apt Server, writes only public/LAN values to the mobile's ignored `.env.local`, then builds, installs, launches, and serves the app. `Ctrl-C` shuts down the complete stack. See [the local phone stack guide](docs/local-phone-stack.md) for new-Mac setup, user selection, networking, and failure behavior.
+
+## Safe upgrade of existing profiles
+
+Provisioning preserves `.apt-claw.json` and private artifacts. On the first chat
+turn, the server snapshots SOUL/USER/MEMORY into the owner-only
+`.apt-claw-memory-backup.json`, reconciles those values to the same owner in
+Postgres, and only then writes the new `.apt-memory.json` marker and removes
+the old marker. Database errors, missing profiles, invalid artifacts, and
+unreadable files stop the turn without overwriting the original memory. A
+restart retries from the saved snapshot; keep it for operator recovery. Once
+the new marker exists, later turns use current memory, not the old backup.
+The obsolete read-only skill mount is removed without following symlinks.
 
 ## API
 
@@ -73,7 +85,7 @@ On startup, queued/running/stopping rows are failed with `SERVER_RESTARTED`; Her
 
 ## Manual beta lifecycle
 
-Provisioning is deliberately operator-only and idempotent. It validates the Supabase user, derives opaque stable identifiers, creates or reconfigures a Hermes profile without bundled skills, applies the narrow toolset policy and profile-bound Apt bridge, removes retired plugin/skill/marker files and secrets from existing profiles, writes secrets with mode `0600`, runs Hermes config/MCP/live-turn validation (which fails if any toolset other than `memory` and `session_search` is exposed), then upserts the mapping.
+Provisioning is deliberately operator-only and idempotent. It validates the Supabase user, derives opaque stable identifiers, creates or reconfigures a Hermes profile without bundled skills, applies the narrow toolset policy and profile-bound Apt bridge, removes retired plugin/skill files and secrets from existing profiles, writes secrets with mode `0600`, runs Hermes config/MCP/live-turn validation (which fails if any toolset other than `memory` and `session_search` is exposed), then upserts the mapping.
 
 ```bash
 npm run provision-user -- --user-id <supabase-user-uuid>

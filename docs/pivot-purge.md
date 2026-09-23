@@ -51,7 +51,7 @@ Baseline checks before any edit: server `npm ci && npm run typecheck && npm test
 
 ### Provisioning changes (existing profiles are refreshed on the next provision)
 
-`HermesCliProfileAdmin.configure` now: sets `platform_toolsets.api_server=[memory, session_search]`; adds `browser` and `skills` to `agent.disabled_toolsets`; sets `plugins.enabled=[]` and `skills.external_dirs=[]`; registers exactly the three bridge tools; removes `plugins/apt-hunt-browser-policy`, `apt-shared-skills`, and the `.apt-claw.json` marker from the profile directory; removes the `AGENT_BROWSER_EXECUTABLE_PATH` secret. `validate` fails if any toolset other than `memory` and `session_search` is exposed. The one-command local stack re-provisions on every start, so a local Hermes cache cannot keep the old tools alive. Retained `private.*` skill directories stay on disk as inert data; with the skills toolset disabled they are not a tool path.
+`HermesCliProfileAdmin.configure` now: sets `platform_toolsets.api_server=[memory, session_search]`; adds `browser` and `skills` to `agent.disabled_toolsets`; sets `plugins.enabled=[]` and `skills.external_dirs=[]`; registers exactly the three bridge tools; removes `plugins/apt-hunt-browser-policy` and `apt-shared-skills` from the profile directory, handling the original read-only permissions without following symlinks; preserves `.apt-claw.json` until the first successful memory migration; removes the `AGENT_BROWSER_EXECUTABLE_PATH` secret. `validate` fails if any toolset other than `memory` and `session_search` is exposed. The one-command local stack re-provisions on every start, so a local Hermes cache cannot keep the old tools alive. Retained `private.*` skill directories stay on disk as inert data; with the skills toolset disabled they are not a tool path.
 
 ### Defect fixed while verifying
 
@@ -84,23 +84,49 @@ This is a code purge with a documented database disposition, not a live reset. A
 
 Future decommission order, when a founder authorizes it with a backup/retention plan: `shopping_board_items` -> `shopping_list_entries` -> `shopping_boards` -> `shopping_items` -> `commerce_hunts` -> `claw_user_skills` -> `claw_learning_proposals` -> (after the landing console is retired) `claw_documents`/`claw_capabilities` -> `claw_releases` (requires nulling `agent_runs.claw_release_id` first) -> `claw_admins`.
 
-### Live verification that remains blocked
+### Live verification and remaining acceptance
 
-The Supabase project `gmefzjlrvzmfcvlrxtco` (`aptknows-auth`) was reported INACTIVE during the issue audit and was not touched by this work. The actual deployed schema and data were not verified. Before the next production deploy an operator must, from a protected checkout: confirm the project state; confirm all six migrations are applied (`supabase migration list`); confirm the row counts of the retired tables; run the security and performance advisors; then run `npm run test:e2e-live` against two provisioned founders. Do not restore or create a paid project solely for this.
+Read-only inspection on September 23 confirmed that Supabase project
+`gmefzjlrvzmfcvlrxtco` (`aptknows-auth`) is `ACTIVE_HEALTHY` and all six
+historical migrations are present. All 17 public tables retain enabled and
+forced RLS, with no anon/authenticated SELECT or authenticated INSERT grants.
+No live schema, Auth account, or user data was changed. This supersedes the
+September 22 inactive-project observation.
+
+Physical-device and live-model acceptance remain outstanding. After deploying
+the fixes, run the two-founder smoke test and `npm run test:e2e-live` from a
+protected checkout. Recheck project state and migrations at deployment time.
+
+### Review fixes: safe filesystem upgrade
+
+The first memory-backed turn recognizes the old marker and atomically saves an
+owner-only `.apt-claw-memory-backup.json` before reconciling SOUL/USER/MEMORY to
+Postgres. The old marker is retired only after the new files and marker are
+written. Failed reconciliation aborts without overwriting local memory; restart
+uses the original snapshot even after an interrupted write. The backup remains
+available for recovery and is never used in place of newer post-migration memory.
+Oversized artifacts and missing database profiles now fail instead of silently
+continuing. Ownership is checked before any reconciliation.
+
+Filesystem regressions cover actual `0500` shared-skill directories and `0400`
+files, provisioning twice, first-turn migration, symlink target preservation,
+private skill retention, database failure/retry, incomplete inputs, and foreign
+ownership denial. The disposable PostgreSQL fixture now also starts with an old
+marker, unreconciled local memory, and a read-only shared mount.
 
 ## Verification performed
 
 | Check | Result |
 | --- | --- |
-| apt-server `npm ci && npm run typecheck && npm test && npm run build` | Pass (51 tests in 9 files; `dist/` rebuilt from clean contains no `claw/` or `shopping/`) |
+| apt-server `npm ci && npm run typecheck && npm test && npm run build` | Pass (57 tests in 10 files; `dist/` rebuilt from clean contains no `claw/` or `shopping/`) |
 | apt-mobile `npm ci && npm run typecheck && npm test && npm run lint` | Pass (19 tests in 4 files) |
 | apt-mobile `npx expo export --platform ios` | Pass (bundle produced) |
-| apt-mobile `npx expo-doctor` | Fails, pre-existing: "17 packages out of date" against Expo's live SDK 57 registry. Reproduced on the untouched baseline (18 including `expo-location`). No versions were changed by this purge; CI on `main` already reports this. |
+| apt-mobile `npx expo-doctor` | Pass (21/21 checks after a clean install). The paired mobile review fix aligns SDK 57 patches and retains Expo Doctor in CI. |
 | Hermes capability harness (`npm run test:hermes-capability`) against pinned `v2026.8.19` with the mock provider | Pass; `docs/hermes-capability-results.json` regenerated. Exactly three bridge tools discovered, retired tools absent, `browser`/`skills` toolsets absent from the API server and from the model surface, isolation and stop checks unchanged. |
-| Local-database check (`npm run test:local-db`) on a throwaway PostgreSQL 16 container: replay all six migrations unchanged, seed pre-pivot data (Claw release, admin, Hunt, private skill, two founders' memory), then drive the purged server | Pass: history preserved and owner-scoped; owner-scoped turn compiles only the owner's context and materializes it; idempotent send; cross-user denial; bridge tools bound to the run owner and retired tools rejected; Hermes-side memory edits reconciled and surviving to the next turn; two-user isolation; stop; fresh user's first turn creates its profile row; restart recovery; retired rows untouched. |
+| Local-database check (`npm run test:local-db`) on a throwaway PostgreSQL 16 instance: replay all six migrations unchanged, seed pre-pivot data (Claw release, admin, Hunt, private skill, two founders' memory), then drive the purged server | Pass: legacy filesystem memory recovered before materialization; failed reconciliation preserves database memory; history preserved and owner-scoped; idempotent send; cross-user denial; bridge tools bound to the run owner and retired tools rejected; Hermes-side memory edits surviving to the next turn; two-user isolation; stop; fresh-user profile creation; restart recovery; retired rows untouched. |
 | Retired public routes and the old bridge route return `404`; the bridge accepts only the three tools | Covered by `test/app.test.ts` and the live e2e script |
 | Observation | Post-run private-memory reconciliation runs after the terminal SSE event; a server shutdown in that window logs "Private memory reconciliation failed" and the artifacts are reconciled from disk on the owner's next turn instead. Pre-existing behavior, unchanged. |
-| Device/live-provider test | Not run. No iPhone, live Hermes provider, or active Supabase project was used. |
+| Device/live-provider test | Not run. No iPhone or live Hermes provider was used. Supabase inspection was read-only. |
 
 ## Contract for TBD-12
 

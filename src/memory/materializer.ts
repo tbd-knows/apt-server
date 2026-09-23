@@ -2,16 +2,17 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path';
 import type { AgentInstance } from '../domain.js';
 import type { RuntimePrivateArtifacts } from './domain.js';
+import { removeLegacySharedSkills } from './legacy-cleanup.js';
+export { LEGACY_SHARED_SKILLS_DIRECTORY } from './legacy-cleanup.js';
 
 interface RuntimeMarker {
   runtimeHash: string;
 }
 
 export const MEMORY_MARKER_FILE = '.apt-memory.json';
-/** Marker written by the retired Claw runtime; removed on first materialization. */
+/** Retained until private artifacts have been reconciled and materialized. */
 export const LEGACY_CLAW_MARKER_FILE = '.apt-claw.json';
-/** Read-only shared skill mount written by the retired Claw runtime. */
-export const LEGACY_SHARED_SKILLS_DIRECTORY = 'apt-shared-skills';
+export const LEGACY_MEMORY_BACKUP_FILE = '.apt-claw-memory-backup.json';
 
 /**
  * Writes the owner's private Soul/USER/MEMORY artifacts into that owner's
@@ -30,8 +31,23 @@ export class MemoryMaterializer {
   async readCompletedPrivateArtifacts(instance: AgentInstance): Promise<RuntimePrivateArtifacts | null> {
     const root = this.profileDirectory(instance);
     const marker = await readOptional(join(root, MEMORY_MARKER_FILE));
-    if (!marker) return null;
-    try { JSON.parse(marker) as RuntimeMarker; } catch { return null; }
+    if (marker === null) {
+      const legacy = await readOptional(join(root, LEGACY_CLAW_MARKER_FILE));
+      if (legacy === null) return null;
+      parseMarker(legacy);
+      const backup = await readOptional(join(root, LEGACY_MEMORY_BACKUP_FILE));
+      if (backup !== null) return parseArtifacts(backup);
+      // A missing/unreadable legacy artifact must stop migration, not turn
+      // into an empty value that could erase the owner's database memory.
+      const artifacts = {
+        soulText: await readFile(join(root, 'SOUL.md'), 'utf8'),
+        hotUserText: await readFile(join(root, 'memories', 'USER.md'), 'utf8'),
+        hotMemoryText: await readFile(join(root, 'memories', 'MEMORY.md'), 'utf8'),
+      };
+      await atomicWrite(join(root, LEGACY_MEMORY_BACKUP_FILE), JSON.stringify(artifacts), 0o600);
+      return artifacts;
+    }
+    parseMarker(marker);
     return {
       soulText: (await readOptional(join(root, 'SOUL.md'))) ?? '',
       hotUserText: (await readOptional(join(root, 'memories', 'USER.md'))) ?? '',
@@ -42,24 +58,51 @@ export class MemoryMaterializer {
   async materialize(instance: AgentInstance, artifacts: RuntimePrivateArtifacts, runtimeHash: string) {
     const root = this.profileDirectory(instance);
     await mkdir(join(root, 'memories'), { recursive: true, mode: 0o700 });
-    await rm(join(root, LEGACY_CLAW_MARKER_FILE), { force: true });
-    await rm(join(root, LEGACY_SHARED_SKILLS_DIRECTORY), { recursive: true, force: true });
     const currentMarker = await readOptional(join(root, MEMORY_MARKER_FILE));
-    if (currentMarker) {
-      try {
-        if ((JSON.parse(currentMarker) as RuntimeMarker).runtimeHash === runtimeHash) return false;
-      } catch { /* replace invalid marker */ }
+    const legacyMarker = await readOptional(join(root, LEGACY_CLAW_MARKER_FILE));
+    if (legacyMarker !== null && currentMarker === null) {
+      parseMarker(legacyMarker);
+      const backup = await readOptional(join(root, LEGACY_MEMORY_BACKUP_FILE));
+      const saved = backup === null ? null : parseArtifacts(backup);
+      if (!saved || saved.soulText !== artifacts.soulText || saved.hotUserText !== artifacts.hotUserText || saved.hotMemoryText !== artifacts.hotMemoryText) {
+        throw new Error('Legacy private memory must be reconciled before materialization.');
+      }
+    }
+    await removeLegacySharedSkills(root);
+    if (currentMarker !== null) {
+      if (parseMarker(currentMarker).runtimeHash === runtimeHash) {
+        await rm(join(root, LEGACY_CLAW_MARKER_FILE), { force: true });
+        return false;
+      }
     }
     await atomicWrite(join(root, 'SOUL.md'), artifacts.soulText, 0o600);
     await atomicWrite(join(root, 'memories', 'USER.md'), artifacts.hotUserText, 0o600);
     await atomicWrite(join(root, 'memories', 'MEMORY.md'), artifacts.hotMemoryText, 0o600);
     await atomicWrite(join(root, MEMORY_MARKER_FILE), JSON.stringify({ runtimeHash }), 0o600);
+    await rm(join(root, LEGACY_CLAW_MARKER_FILE), { force: true });
     return true;
   }
 }
 
 async function readOptional(path: string) {
-  try { return await readFile(path, 'utf8'); } catch { return null; }
+  try { return await readFile(path, 'utf8'); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function parseMarker(text: string): RuntimeMarker {
+  const marker = JSON.parse(text) as RuntimeMarker | null;
+  if (!marker || typeof marker.runtimeHash !== 'string') throw new Error('Invalid private memory marker.');
+  return marker;
+}
+
+function parseArtifacts(text: string): RuntimePrivateArtifacts {
+  const value = JSON.parse(text) as RuntimePrivateArtifacts | null;
+  if (!value || typeof value.soulText !== 'string' || typeof value.hotUserText !== 'string' || typeof value.hotMemoryText !== 'string') {
+    throw new Error('Invalid legacy private memory backup; preserve it for recovery.');
+  }
+  return { soulText: value.soulText, hotUserText: value.hotUserText, hotMemoryText: value.hotMemoryText };
 }
 
 async function atomicWrite(path: string, content: string, mode: number) {
