@@ -55,9 +55,13 @@ describe('chat API', () => {
     expect(createTurn).toHaveBeenCalledWith(USER_A, '77777777-7777-4777-8777-777777777777', 'hello\nworld');
   });
 
-  it('rejects an invalid foreground location before creating a database turn', async () => {
+  it('ignores a stale client\'s foreground location instead of storing or rejecting it', async () => {
     const createTurn = vi.fn(async () => (await import('./fixtures.js')).turn());
-    const { app } = await appWith({ createTurn });
+    const agentRuntime = runtime();
+    const repo = repository({ createTurn });
+    const app = await buildApp({ config, auth: auth(), repository: repo, runtime: agentRuntime });
+    apps.push(app);
+    await app.ready();
     const response = await app.inject({
       method: 'POST',
       url: '/v1/chat/messages',
@@ -65,18 +69,46 @@ describe('chat API', () => {
       payload: {
         clientMessageId: '77777777-7777-4777-8777-777777777777',
         content: 'Find groceries nearby',
-        location: {
-          latitude: 40.7,
-          longitude: -74,
-          accuracy: 2_000,
-          capturedAt: new Date().toISOString(),
-          coarseLabel: 'New York, NY, US',
-        },
+        location: { latitude: 40.7, longitude: -74, accuracy: 25, capturedAt: new Date().toISOString(), coarseLabel: 'New York, NY, US' },
       },
     });
-    expect(response.statusCode).toBe(400);
-    expect(response.json().error.code).toBe('INVALID_MESSAGE');
-    expect(createTurn).not.toHaveBeenCalled();
+    expect(response.statusCode).toBe(202);
+    expect(createTurn).toHaveBeenCalledWith(USER_A, '77777777-7777-4777-8777-777777777777', 'Find groceries nearby');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.stringify(vi.mocked(agentRuntime.submit).mock.calls)).not.toContain('40.7');
+  });
+
+  it('serves no retired Shopping or Claw routes', async () => {
+    const { app } = await appWith();
+    for (const request of [
+      { method: 'GET', url: '/v1/shopping/summary' },
+      { method: 'GET', url: '/v1/cart' },
+      { method: 'POST', url: '/v1/cart/items', payload: {} },
+      { method: 'GET', url: '/v1/wishlist' },
+      { method: 'GET', url: '/v1/boards' },
+      { method: 'POST', url: '/internal/claw/tool', payload: {} },
+    ] as const) {
+      const response = await app.inject({ ...request, headers: { authorization: 'Bearer token-a' } });
+      expect(response.statusCode, request.url).toBe(404);
+    }
+  });
+
+  it('accepts only the three private-context tools on the agent bridge', async () => {
+    const { MemoryService } = await import('../src/memory/service.js');
+    const memoryService = new MemoryService({} as never);
+    const app = await buildApp({ config, auth: auth(), repository: repository(), runtime: runtime(), memoryService });
+    apps.push(app);
+    await app.ready();
+    const { aptBridgeToken } = await import('../src/memory/bridge-auth.js');
+    const token = aptBridgeToken('apt-0123456789abcdef0123', config.hermes.keySecret);
+    for (const tool of ['apt_commerce_hunt', 'apt_manage_shopping', 'apt_get_shopping_state', 'apt_previous_hunts', 'apt_propose_shared_change']) {
+      const response = await app.inject({ method: 'POST', url: '/internal/agent/tool', headers: { authorization: `Bearer ${token}` }, payload: { tool, arguments: {} } });
+      expect(response.statusCode, tool).toBe(400);
+    }
+    const inactive = await app.inject({ method: 'POST', url: '/internal/agent/tool', headers: { authorization: `Bearer ${token}` }, payload: { tool: 'apt_search_knowledge', arguments: { query: 'x' } } });
+    expect(inactive.statusCode).toBe(404);
+    const forged = await app.inject({ method: 'POST', url: '/internal/agent/tool', headers: { authorization: 'Bearer apt-0123456789abcdef0123.forged' }, payload: { tool: 'apt_search_knowledge', arguments: { query: 'x' } } });
+    expect(forged.statusCode).toBe(401);
   });
 
   it('returns the original turn for an idempotent duplicate without starting Hermes again', async () => {

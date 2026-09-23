@@ -1,36 +1,44 @@
 import type { AgentRuntime, AgentRuntimeEvent, AgentSubmitOptions } from '../agent-runtime.js';
 import type { AgentInstance } from '../domain.js';
-import { ClawMaterializer } from './materializer.js';
-import type { ClawRunContext, ClawService } from './service.js';
+import type { RunContext } from './domain.js';
+import type { MemoryMaterializer } from './materializer.js';
+import type { MemoryService } from './service.js';
 
-export class ClawAgentRuntime implements AgentRuntime {
+/**
+ * Wraps the isolated Hermes transport with owner-scoped private context:
+ * reconcile what the previous run wrote, compile this turn's instructions,
+ * materialize the private artifacts, then submit.
+ */
+export class MemoryAgentRuntime implements AgentRuntime {
   private readonly locks = new Map<string, Promise<void>>();
 
   constructor(
     private readonly inner: AgentRuntime,
-    private readonly service: ClawService,
-    private readonly materializer: ClawMaterializer,
+    private readonly service: MemoryService,
+    private readonly materializer: MemoryMaterializer,
   ) {}
 
   async submit(instance: AgentInstance, input: string, options?: AgentSubmitOptions) {
-    const context = options?.clawContext;
-    if (!context) throw new Error('Claw runtime requires a server-owned run context.');
+    const context = options?.context;
+    if (!context) throw new Error('The agent runtime requires a server-owned run context.');
+    if (context.userId !== instance.userId) throw new Error('Agent ownership mismatch.');
     return this.withProfileLock(instance.hermesProfileName, async () => {
       const runtimeArtifacts = await this.materializer.readCompletedPrivateArtifacts(instance);
       if (runtimeArtifacts) await this.service.reconcileRuntime(context.userId, runtimeArtifacts);
       const prepared = await this.service.prepareTurn(context, instance, input);
-      await this.materializer.materialize(instance, prepared.bundle, prepared.runtimeHash);
+      await this.materializer.materialize(instance, prepared.artifacts, prepared.runtimeHash);
       await this.service.markMaterialized(context.userId, prepared.runtimeHash);
       return this.inner.submit(instance, input, {
         ...options,
         instructions: prepared.instructions,
-        conversationHistory: prepared.bundle.conversationHistory,
+        conversationHistory: prepared.conversationHistory,
       });
     });
   }
 
-  async reconcile(instance: AgentInstance, context?: ClawRunContext) {
+  async reconcile(instance: AgentInstance, context?: RunContext) {
     if (!context) return;
+    if (context.userId !== instance.userId) throw new Error('Agent ownership mismatch.');
     await this.withProfileLock(instance.hermesProfileName, async () => {
       const artifacts = await this.materializer.readCompletedPrivateArtifacts(instance);
       if (artifacts) await this.service.reconcileRuntime(context.userId, artifacts);

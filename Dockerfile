@@ -4,7 +4,6 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
-COPY hermes-plugins ./hermes-plugins
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22.22.0-bookworm-slim AS runtime
@@ -14,7 +13,6 @@ RUN groupadd --system apt && useradd --system --gid apt --home-dir /app apt
 COPY --from=build --chown=apt:apt /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=apt:apt /app/node_modules ./node_modules
 COPY --from=build --chown=apt:apt /app/dist ./dist
-COPY --from=build --chown=apt:apt /app/hermes-plugins ./hermes-plugins
 USER apt
 EXPOSE 8787
 CMD ["node", "dist/server.js"]

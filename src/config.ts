@@ -50,7 +50,6 @@ const configSchema = z.object({
   HERMES_PROVIDER_KEY_ENV: z.string().regex(/^[A-Z][A-Z0-9_]*$/).default('OPENAI_API_KEY'),
   HERMES_PROVIDER_API_KEY: configuredValue,
   APT_INTERNAL_URL: z.url().default('http://127.0.0.1:8787'),
-  HERMES_BROWSER_EXECUTABLE_PATH: z.string().trim().min(1).optional(),
 }).superRefine((value, context) => {
   if (value.HERMES_PROVIDER === 'custom' && !value.HERMES_PROVIDER_BASE_URL) {
     context.addIssue({
@@ -93,7 +92,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       providerKeyEnv: parsed.HERMES_PROVIDER_KEY_ENV,
       providerApiKey: parsed.HERMES_PROVIDER_API_KEY,
       internalUrl: parsed.APT_INTERNAL_URL.replace(/\/$/, ''),
-      browserExecutablePath: parsed.HERMES_BROWSER_EXECUTABLE_PATH,
     },
   } as const;
 }

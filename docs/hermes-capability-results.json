@@ -22,14 +22,19 @@
     "memoryChars": 2200,
     "result": "pass"
   },
-  "aptOnlySkills": "pass",
   "aptBridgeDiscovery": "pass",
-  "browserHuntTools": "pass",
+  "aptBridgeTools": [
+    "apt_search_knowledge",
+    "apt_remember",
+    "apt_update_private_artifact"
+  ],
+  "retiredBridgeToolsAbsent": "pass",
+  "browserToolsetDisabled": "pass",
+  "skillsToolsetDisabled": "pass",
   "apiBackedWebSearchDisabled": "pass",
-  "browserExternalInteraction": "pass",
   "dangerousToolsDisabled": "pass",
   "arbitraryMcpDisabled": "pass",
   "typedBridgeBoundary": "covered-by-server-tests",
   "stop": "pass",
-  "testedAt": "2026-08-27T08:48:19.838Z"
+  "testedAt": "2026-09-23T08:08:58.619Z"
 }

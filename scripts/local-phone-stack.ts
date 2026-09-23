@@ -214,8 +214,10 @@ async function ensureHermesCli(configured: string, version: string) {
       await rm(stagedSource, { recursive: true, force: true });
     }
   }
+  // The [mcp] extra installs the Python MCP SDK that Hermes needs to load the
+  // Apt bridge; without it `hermes mcp test apt` fails during provisioning.
   await foreground(resolve(environment, 'bin', 'python'), [
-    '-m', 'pip', 'install', '--disable-pip-version-check', '--editable', source,
+    '-m', 'pip', 'install', '--disable-pip-version-check', '--editable', `${source}[mcp]`,
     'aiohttp>=3.9,<4',
   ], serverDirectory);
   await verifyHermesVersion(cli, version);

@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
-import pg from 'pg';
-import { hermesApiKey } from '../src/agent-runtime.js';
 import { loadConfig } from '../src/config.js';
 import type { ChatPage, ChatRun, CreatedTurn, PublicRunEvent } from '../src/domain.js';
 
@@ -90,31 +88,9 @@ async function streamRun(token: string, runId: string) {
   return events;
 }
 
-interface LiveForegroundLocation {
-  latitude: number;
-  longitude: number;
-  accuracy: number;
-  capturedAt: string;
-  coarseLabel: string;
-}
-
-interface HermesIdentity {
-  profileName: string;
-  sessionId: string;
-}
-
-interface HermesSessionMessage {
-  id?: unknown;
-  role?: unknown;
-  content?: unknown;
-  tool_calls?: unknown;
-  tool_name?: unknown;
-  timestamp?: unknown;
-}
-
-async function createAndComplete(token: string, content: string, location?: LiveForegroundLocation) {
+async function createAndComplete(token: string, content: string) {
   const clientMessageId = randomUUID();
-  const payload = JSON.stringify({ clientMessageId, content, ...(location ? { location } : {}) });
+  const payload = JSON.stringify({ clientMessageId, content });
   const first = await request<CreatedTurn>(token, '/v1/chat/messages', {
     method: 'POST', body: payload,
   });
@@ -132,186 +108,6 @@ async function createAndComplete(token: string, content: string, location?: Live
   assert(run.status === 'completed', `Expected completed run; received ${run.status}.`);
   assert(Boolean(run.response?.content.trim()), 'Completed response was empty.');
   return { turn, events, run };
-}
-
-async function loadHermesIdentity(userId: string): Promise<HermesIdentity> {
-  const client = new pg.Client({
-    connectionString: config.supabase.databaseUrl,
-    ssl: config.supabase.databaseSsl ? { rejectUnauthorized: false } : false,
-  });
-  await client.connect();
-  try {
-    const result = await client.query<{ hermes_profile_name: string; hermes_session_id: string }>(
-      `select hermes_profile_name, hermes_session_id
-       from public.agent_instances
-       where user_id = $1 and status = 'ready'`,
-      [userId],
-    );
-    assert(result.rowCount === 1, 'Founder does not have exactly one ready Hermes agent instance.');
-    return {
-      profileName: result.rows[0]!.hermes_profile_name,
-      sessionId: result.rows[0]!.hermes_session_id,
-    };
-  } finally {
-    await client.end();
-  }
-}
-
-function hermesProfileBaseUrl(profileName: string) {
-  if (config.hermes.topology === 'shared') {
-    return `${config.hermes.baseUrl}/p/${encodeURIComponent(profileName)}`;
-  }
-  const configured = config.hermes.profileUrls[profileName];
-  if (configured) return configured.replace(/\/$/, '');
-  return config.hermes.profileUrlTemplate.replace('{profile}', encodeURIComponent(profileName)).replace(/\/$/, '');
-}
-
-async function loadHermesMessages(identity: HermesIdentity) {
-  const response = await fetch(
-    `${hermesProfileBaseUrl(identity.profileName)}/api/sessions/${encodeURIComponent(identity.sessionId)}/messages?limit=500&order=latest`,
-    {
-      headers: {
-        Authorization: `Bearer ${hermesApiKey(identity.profileName, config.hermes.keySecret)}`,
-        'X-Hermes-Session-Key': `apt:${identity.profileName}`,
-      },
-      signal: AbortSignal.timeout(30_000),
-    },
-  );
-  assert(response.ok, `Hermes session trace returned ${response.status}.`);
-  const body = await response.json() as { data?: unknown };
-  assert(Array.isArray(body.data), 'Hermes session trace did not return messages.');
-  return body.data as HermesSessionMessage[];
-}
-
-function hermesMessageFingerprint(message: HermesSessionMessage) {
-  if (typeof message.id === 'string' || typeof message.id === 'number') return `id:${String(message.id)}`;
-  return `body:${JSON.stringify(message)}`;
-}
-
-function browserToolNames(messages: HermesSessionMessage[]) {
-  const names = new Set<string>();
-  const collectToolCall = (value: unknown): void => {
-    if (typeof value === 'string') {
-      try {
-        collectToolCall(JSON.parse(value) as unknown);
-      } catch {
-        // A plain tool result is not a tool-call envelope.
-      }
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const entry of value) collectToolCall(entry);
-      return;
-    }
-    if (!value || typeof value !== 'object') return;
-    const call = value as Record<string, unknown>;
-    if (typeof call.name === 'string') names.add(call.name);
-    if (typeof call.tool_name === 'string') names.add(call.tool_name);
-    if (call.function && typeof call.function === 'object') {
-      const functionName = (call.function as Record<string, unknown>).name;
-      if (typeof functionName === 'string') names.add(functionName);
-    }
-  };
-  for (const message of messages) {
-    if (typeof message.tool_name === 'string') names.add(message.tool_name);
-    collectToolCall(message.tool_calls);
-  }
-  return [...names].sort();
-}
-
-async function verifyPersistedBrowserHunt(
-  userId: string,
-  runId: string,
-  location: LiveForegroundLocation | null,
-  identity: HermesIdentity,
-  priorHermesMessageFingerprints: Set<string>,
-) {
-  const client = new pg.Client({
-    connectionString: config.supabase.databaseUrl,
-    ssl: config.supabase.databaseSsl ? { rejectUnauthorized: false } : false,
-  });
-  await client.connect();
-  try {
-    const result = await client.query<{
-      status: string;
-      category: string;
-      coarse_location_label: string | null;
-      query: unknown;
-      constraints: unknown;
-      candidates: unknown;
-      source_urls: unknown;
-      claw_mode: string | null;
-      request_content: string;
-      hermes_profile_name: string;
-      hermes_session_id: string;
-    }>(
-      `select h.status, h.category, h.coarse_location_label, h.query, h.constraints,
-              h.candidates, h.source_urls,
-              r.claw_mode, m.content as request_content,
-              i.hermes_profile_name, i.hermes_session_id
-       from public.commerce_hunts h
-       join public.agent_runs r on r.id = h.agent_run_id and r.user_id = h.user_id
-       join public.messages m on m.id = h.request_message_id and m.user_id = h.user_id
-       join public.agent_instances i on i.user_id = h.user_id
-       where h.user_id = $1 and h.agent_run_id = $2`,
-      [userId, runId],
-    );
-    assert(result.rowCount === 1, 'Completed run did not persist exactly one owned commerce Hunt.');
-    const row = result.rows[0]!;
-    assert(row.status === 'completed' && row.claw_mode === 'hunt', 'Browser Hunt did not settle as a completed Hunt run.');
-    assert(row.category === 'retail', `Browser Hunt persisted unexpected category ${row.category}.`);
-    if (location) {
-      assert(row.coarse_location_label === location.coarseLabel, 'Browser Hunt did not persist the expected coarse location label.');
-    } else {
-      assert(row.coarse_location_label === null, 'Browser Hunt unexpectedly persisted a coarse location label.');
-    }
-    assert(row.hermes_profile_name === identity.profileName && row.hermes_session_id === identity.sessionId, 'Browser Hunt ran under an unexpected Hermes identity.');
-    assert(Array.isArray(row.candidates) && row.candidates.length > 0 && row.candidates.length <= 5, 'Browser Hunt persisted an invalid candidate count.');
-    assert(Array.isArray(row.source_urls) && row.source_urls.length > 0, 'Browser Hunt persisted no source URLs.');
-    const sourceUrls = row.source_urls.filter((value): value is string => typeof value === 'string');
-    assert(sourceUrls.length === row.source_urls.length, 'Browser Hunt persisted a non-string source URL.');
-    for (const sourceUrl of sourceUrls) {
-      const parsed = new URL(sourceUrl);
-      assert(parsed.protocol === 'http:' || parsed.protocol === 'https:', 'Browser Hunt persisted a non-public source URL.');
-    }
-    const productCanonicalUrls = row.candidates.flatMap((candidate) => {
-      if (!candidate || typeof candidate !== 'object') return [];
-      const record = candidate as Record<string, unknown>;
-      if (record.candidate_kind !== 'product' || typeof record.canonical_url !== 'string') return [];
-      const parsed = new URL(record.canonical_url);
-      assert(Boolean((parsed.pathname && parsed.pathname !== '/') || parsed.search), 'Browser Hunt persisted a merchant homepage as product evidence.');
-      return [parsed.href.replace(/#.*$/, '')];
-    });
-    assert(new Set(productCanonicalUrls).size === productCanonicalUrls.length, 'Browser Hunt persisted duplicate product URLs.');
-    assert(sourceUrls.length >= row.candidates.length, 'Browser Hunt persisted fewer distinct evidence URLs than candidates.');
-    if (location) {
-      const persistenceText = JSON.stringify(row);
-      assert(!persistenceText.includes(String(location.latitude)), 'Exact latitude was persisted in Hunt data.');
-      assert(!persistenceText.includes(String(location.longitude)), 'Exact longitude was persisted in Hunt data.');
-    }
-
-    const currentHermesMessages = await loadHermesMessages(identity);
-    const huntTrace = currentHermesMessages.filter(
-      (message) => !priorHermesMessageFingerprints.has(hermesMessageFingerprint(message)),
-    );
-    assert(huntTrace.length > 0, 'Hermes session trace contained no messages for the browser Hunt.');
-    const toolNames = browserToolNames(huntTrace);
-    assert(toolNames.includes('browser_navigate'), 'Hermes Hunt trace did not navigate to a public site.');
-    assert(
-      ['browser_click', 'browser_type', 'browser_press'].some((toolName) => toolNames.includes(toolName)),
-      'Hermes Hunt trace did not interact with a public search or store flow.',
-    );
-    assert(!toolNames.includes('web_search'), 'Hermes Hunt trace used forbidden API-backed web_search.');
-    return {
-      candidateCount: row.candidates.length,
-      sourceUrls,
-      productCanonicalUrls,
-      traceMessageCount: huntTrace.length,
-      toolNames,
-    };
-  } finally {
-    await client.end();
-  }
 }
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -369,55 +165,13 @@ assert(historyB.response.ok && historyB.body && 'messages' in historyB.body, 'Us
 assert((historyB.body as ChatPage).messages.some((message) => message.content.includes(markerB)), 'User B marker was not persisted.');
 assert(!(historyB.body as ChatPage).messages.some((message) => message.content.includes(markerA)), 'User A content leaked into user B history.');
 
-const verifyStep11 = args.get('verify-step-11') === 'true';
-const verifyHunt = args.get('verify-hunt') === 'true' || verifyStep11;
-let huntEvidence: {
-  candidateCount: number;
-  sourceUrls: string[];
-  productCanonicalUrls: string[];
-  traceMessageCount: number;
-  toolNames: string[];
-} | null = null;
-if (verifyHunt) {
-  const location: LiveForegroundLocation | null = verifyStep11 ? null : {
-    latitude: 40.74843123,
-    longitude: -73.98565678,
-    accuracy: 25,
-    capturedAt: new Date().toISOString(),
-    coarseLabel: 'New York, NY, 10001, US',
-  };
-  const hermesIdentity = await loadHermesIdentity(userA);
-  const priorHermesMessageFingerprints = new Set(
-    (await loadHermesMessages(hermesIdentity)).map(hermesMessageFingerprint),
-  );
-  const hunt = await createAndComplete(
-    tokenA,
-    verifyStep11
-      ? 'Find three current waterproof hiking boots for a winter trip, with source links.'
-      : 'Run a local retail Hunt that requires my current location. Open a public search engine or retailer search page with browser_navigate, type the query into its search field, interact with the results, and inspect the current source pages. Find two currently available running shoes from public retailer or brand stores near me, compare them, and include the source links. Do not use API-backed web_search.',
-    location ?? undefined,
-  );
-  huntEvidence = await verifyPersistedBrowserHunt(
-    userA,
-    hunt.turn.run.id,
-    location,
-    hermesIdentity,
-    priorHermesMessageFingerprints,
-  );
-  assert(huntEvidence.sourceUrls.some((url) => hunt.run.response?.content.includes(url)), 'Browser Hunt response did not expose any persisted source URL.');
-  if (verifyStep11) {
-    assert(huntEvidence.candidateCount === 3, `Step 11 persisted ${huntEvidence.candidateCount} candidates instead of three.`);
-    assert(huntEvidence.productCanonicalUrls.length === 3, 'Step 11 did not persist three direct product candidates.');
-    assert(
-      huntEvidence.productCanonicalUrls.every((url) => hunt.run.response?.content.includes(url)),
-      'Step 11 response did not expose every direct product URL.',
-    );
-  }
-  if (location) {
-    assert(!hunt.run.response?.content.includes(String(location.latitude)), 'Browser Hunt response exposed exact latitude.');
-    assert(!hunt.run.response?.content.includes(String(location.longitude)), 'Browser Hunt response exposed exact longitude.');
-  }
+// Retired routes must be absent, not merely unauthorized.
+for (const path of ['/v1/shopping/summary', '/v1/cart', '/v1/wishlist', '/v1/boards']) {
+  const retired = await request<unknown>(tokenA, path);
+  assert(retired.response.status === 404, `Retired route ${path} is still served (${retired.response.status}).`);
 }
+const retiredBridge = await request<unknown>(null, '/internal/claw/tool', { method: 'POST', body: '{}' });
+assert(retiredBridge.response.status === 404, 'Retired Claw bridge route is still served.');
 
 const stopTurn = await request<CreatedTurn>(tokenB, '/v1/chat/messages', {
   method: 'POST',
@@ -441,14 +195,7 @@ process.stdout.write(JSON.stringify({
     pagination: true,
     stop: true,
     crossUserIsolation: true,
-    browserHunt: verifyHunt,
-    step11Hunt: verifyStep11,
+    retiredRoutesAbsent: true,
   },
   eventCounts: { userA: completedA.events.length, stop: stopEvents.length },
-  ...(huntEvidence ? { huntEvidence: {
-    candidateCount: huntEvidence.candidateCount,
-    sourceCount: huntEvidence.sourceUrls.length,
-    traceMessageCount: huntEvidence.traceMessageCount,
-    toolNames: huntEvidence.toolNames,
-  } } : {}),
 }) + '\n');
