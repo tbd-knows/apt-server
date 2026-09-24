@@ -15,6 +15,7 @@ import { listConnections } from './connections.js';
 import { listServiceActions,prepareServiceAction,serviceActionSchema } from './service-actions.js';
 import { proposeShippingData, decideShippingData, shippingDataView } from './shipping-consent.js';
 import { prepareShippingValidation,shippingValidationSchema } from './shipping-validation.js';
+import { prepareShippingRates,shippingRatesSchema } from './shipping-rates.js';
 
 export class CommerceService {
   get research() { return new CommerceResearch(this); }
@@ -453,7 +454,7 @@ export class CommerceService {
         command: preparedCommandSchema, explanation: z.string().trim().min(1).max(500) }).strict(),
       z.object({ action: z.literal('research'), exchangeId: z.uuid(), research: researchInputSchema }).strict(),
       serviceActionSchema,
-      shippingValidationSchema,
+      shippingValidationSchema,shippingRatesSchema,
     ]).parse(raw);
     const actor = context.userId;
     if (command.action === 'state') {
@@ -474,6 +475,7 @@ export class CommerceService {
     if (command.action === 'suggest_preference') return this.preference(actor, { key: command.key, value: command.value, provenance: command.provenance }, true);
     if (command.action === 'research') return this.research.request(actor,command.exchangeId,command.research);
     if (command.action === 'prepare_service_action') return prepareServiceAction(this,actor,context.requestMessageId,command);
+    if (command.action === 'prepare_shipping_rates') return prepareShippingRates(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_validation') return prepareShippingValidation(this,actor,context.requestMessageId,command);
     const key = command.action === 'ask_owner' ? `agent:${context.requestMessageId}:${digest(command)}` : `agent-action:${context.requestMessageId}`;
     if (command.action === 'draft_request') {

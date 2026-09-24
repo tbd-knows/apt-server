@@ -7,6 +7,7 @@ import type { CommerceService } from './service.js';
 import type { McpInspection } from './mcp-inspection.js';
 import type { ServiceInvocation,ServiceResult } from './mcp-execution.js';
 import { requireCapabilityDiscovery } from './service-policy.js';
+import { shippingRatesResultView } from './shipping-rates.js';
 
 export const serviceActionSchema=z.object({action:z.literal('prepare_service_action'),exchangeId:z.uuid(),connectionId:z.uuid(),
   revision:z.number().int().positive(),tool:z.string().min(1).max(128),arguments:z.record(z.string(),z.unknown()),
@@ -17,12 +18,13 @@ export interface ServiceActionRow {
   result:ServiceResult['result']|null;approved_at:Date|null;expires_at:Date;created_at:Date;updated_at:Date;
 }
 export const serviceActionView=(row:ServiceActionRow)=>({id:row.id,connectionId:row.connection_id,endpoint:row.endpoint,
-  invocation:row.invocation.shippingValidation ? {tool:{name:row.invocation.tool.name,description:'Validate an approved private shipping address'},
+  invocation:row.invocation.shippingRates ? {tool:{name:row.invocation.tool.name,description:'Compare approved shipping rates'},
+    arguments:{operation:row.invocation.shippingRates.sourceActionId?'GetShipment':'CreateShipment',privateInput:'Resolved from approved private forms; omitted from this view'}} : row.invocation.shippingValidation ? {tool:{name:row.invocation.tool.name,description:'Validate an approved private shipping address'},
     arguments:{operation:'ValidateAddress',privateInput:'Resolved from the approved private form; omitted from agent and service-action projections'}} : row.invocation,
   explanation:row.explanation,digest:row.digest,state:row.state,
-  result:row.invocation.shippingValidation ? validationResultView(row.result) : row.result,
+  result:row.invocation.shippingRates ? shippingRatesResultView(row.result) : row.invocation.shippingValidation ? validationResultView(row.result) : row.result,
   expiresAt:row.expires_at,updatedAt:row.updated_at,authority:'untrusted_service_result' as const,
-  purpose:row.invocation.shippingValidation ? 'free_address_validation' as const : 'capability_discovery_only' as const});
+  purpose:row.invocation.shippingRates ? 'free_shipping_rates' as const : row.invocation.shippingValidation ? 'free_address_validation' as const : 'capability_discovery_only' as const});
 function validationResultView(result:ServiceActionRow['result']):ServiceActionRow['result'] {
   const status=result?.structuredContent?.addressValidation;
   return typeof status==='string' && ['valid','invalid','correction_required'].includes(status)
@@ -55,10 +57,7 @@ export async function prepareServiceAction(commerce:CommerceService,actor:string
       where id=$1 and owner_id=$2 and exchange_id=$3 and mode=$4 and state='connected'`,[input.connectionId,actor,e.id,e.mode])).rows[0];
     const tool=connection?.inspection?.tools.find(tool=>tool.name===input.tool);
     if(!connection || !tool) conflict('Connect and inspect this service before preparing an action.');
-    const stale=(await sql.query<ServiceActionRow>(`update pilot_service_actions set state='expired',updated_at=now()
-      where exchange_id=$1 and owner_id=$2 and state='review' and (revision<>$3 or expires_at<now()
-        or (connection_id=$4 and generation<>$5)) returning *`,[e.id,actor,e.revision,input.connectionId,connection.generation])).rows;
-    for(const row of stale) await wakeServiceAction(commerce,sql,row);
+    await expireServiceReviews(commerce,sql,e,actor,input.connectionId,connection.generation);
     const invocation={tool,arguments:input.arguments},callDigest=digest({endpoint:connection.endpoint,invocation});
     requireCapabilityDiscovery(connection.endpoint,invocation);
     const duplicate=(await sql.query<ServiceActionRow>(`select * from pilot_service_actions where connection_id=$1 and call_digest=$2
@@ -75,6 +74,12 @@ export async function prepareServiceAction(commerce:CommerceService,actor:string
     await wakeServiceAction(commerce,sql,row);
     return serviceActionView(row);
   });
+}
+export async function expireServiceReviews(commerce:CommerceService,sql:PoolClient,e:Exchange,actor:string,connectionId:string,generation:string) {
+  const stale=(await sql.query<ServiceActionRow>(`update pilot_service_actions set state='expired',updated_at=now()
+    where exchange_id=$1 and owner_id=$2 and state='review' and (revision<>$3 or expires_at<now()
+      or (connection_id=$4 and generation<>$5)) returning *`,[e.id,actor,e.revision,connectionId,generation])).rows;
+  for(const row of stale) await wakeServiceAction(commerce,sql,row);
 }
 export async function wakeServiceAction(commerce:CommerceService,sql:PoolClient,row:ServiceActionRow) {
   const e=await commerce.repository.get(row.exchange_id,row.owner_id,sql);

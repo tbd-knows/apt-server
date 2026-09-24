@@ -69,10 +69,9 @@ or run by this research path.
 Shippo service's [operation reference](https://github.com/goshippo/ai/blob/main/skills/shippo/references/tool-reference.md),
 [response envelope](https://github.com/goshippo/ai/blob/main/skills/shippo/references/response-envelope.md)
 and [published OpenAPI](https://docs.goshippo.com/spec/shippoapi/public-api.yaml).
-This is a tested adapter component; the commerce worker does **not yet call it**
-or enable Shippo rate/label execution. A separate free address-validation path
-is integrated through exact two-owner data consent and seller action approval,
-as described below. Generic service execution remains denied.
+Free address validation and shipment/rate creation/retrieval now consume this
+contract through the approved service-action harness. Paid label execution is
+not yet wired into the commerce worker. Generic service execution remains denied.
 
 The component builds shipment parameters from server-resolved private forms,
 without silently rounding dimensions. Receipt checks bind provider account,
@@ -92,8 +91,7 @@ never authorize live postage. This component's fixture coverage of both modes is
 not a claim that hosted Shippo supports sandbox calls.
 
 Remaining integration must resolve the actual authenticated meta-tool schemas,
-consume both owners' exact data-sharing consent at dispatch, record which account funds
-postage, bind separate spending permission to provider-confirmed Stripe payment,
+record which account funds postage, bind separate spending permission to provider-confirmed Stripe payment,
 persist operation identity before dispatch and reconcile ambiguous outcomes.
 The metadata field used here is a correlation identifier, **not** provider
 idempotency. Do not replay a purchase because parsing or transport failed. A rate
@@ -299,7 +297,8 @@ The current verified execution policy admits only `shippo_list_tools` and
 service discovered by the agent, not a required account or platform credential.
 The [official operation contract](https://github.com/goshippo/ai/blob/main/skills/shippo-best-practices/SKILL.md)
 distinguishes those metadata operations from its read and write execution wrappers.
-Both execution wrappers remain denied: even a read can be billable. A human's
+Arbitrary execution wrappers remain denied: even a read can be billable. The
+separate typed address/rate paths below admit only their verified nested operations. A human's
 approval of arbitrary tool arguments cannot replace the offer's exact monetary
 terms, verified payment or postage authorization. New service policies require a
 verified semantic contract, not a remote `readOnly` annotation or model claim.
@@ -329,10 +328,50 @@ revocation during preflight, credential expiry, crash recovery, private receipts
 forced RLS and unchanged financial/shipping state. No real service account or
 financial operation has been executed.
 
-Still required: resolve private address/parcel references through explicit
-owner data-sharing authority; implement actual rate/label execution contracts;
-bind exact costs and who funds postage to both parties' offer approvals; persist
+Still required: integrate rate selection into exact offers and implement paid
+label execution contracts; bind exact costs and who funds postage to both parties' offer approvals; persist
 canonical provider evidence, reconcile uncertain purchases, and verify artifacts,
 compatible drop-off, no-printer support, tracking and resolutions. Shippo's hosted
 MCP currently documents live-account purchases and no test mode, so a simulated
 fixture is not a real shipping sandbox run.
+
+
+## Free rate creation and pending-result retrieval
+
+After both current addresses have valid receipts under the same two-owner
+consent, `prepare_shipping_rates` resolves addresses and packing server-side.
+The seller reviews a free `CreateShipment` operation against the actual observed
+write-wrapper schema and stored operation description. This creates a shipment
+record in the live service account; it does not purchase a label or select a rate.
+No address, amount, provider identity or arbitrary shipment ID is accepted from
+the model. An unsupported authenticated schema remains a visible blocker.
+
+The action ID is persisted before dispatch and becomes operation metadata.
+The initial authenticated reply establishes the account identity privately;
+subsequent retrieval pins it along with shipment ID and original operation.
+Addresses, parcel, mode, metadata, rate IDs/amounts/currency/age are verified
+before the agent receives rate options. Raw replies and private addresses are
+discarded from stored results; account identity stays in the server-only receipt.
+Public action projections allowlist rate fields and omit account identity.
+Provider display fields reflecting private form values are rejected.
+
+For a pending result the agent first describes `GetShipment`, then prepares
+another reviewed rate action with the pending `sourceActionId`. The server
+supplies the proven shipment ID. This never creates another shipment to poll.
+A new turn cannot duplicate a creation under the same consent, and an uncertain
+create stays unresolved. Expired/stale unsent reviews can be replaced. Changed
+consent, forms, connection or revision prevents dispatch. The same safeguards
+are checked after fresh SDK catalogue inspection to cover withdrawal races.
+
+All hosted-service rate evidence explicitly says `providerMode: live`, including
+inside test-mode commerce. The result does not create a commercial offer, queue
+checkout, buy postage or change payment/shipping state. Rates alone do not prove
+printing, drop-off compatibility or delivery. Those steps remain under development.
+
+`test:shipping-rates-db` exercises actual MCP SDK HTTP against fixtures with
+real disposable Postgres: both validated addresses, exact private arguments,
+creation/polling, integer USD amounts, pending states, expired review recovery,
+duplicates, uncertain dispatch, changed account rejection, preflight withdrawal,
+private projections and unchanged financial/shipping state. CI runs this suite.
+The fixture wrapper/description shapes have not been verified with an authenticated
+production Shippo account; this is not a claim of real provider acceptance.

@@ -40,14 +40,14 @@ registerTool('apt_update_private_artifact', 'Update the current user’s private
 });
 
 registerTool('apt_commerce', 'Read durable commerce state and missing prerequisites. Prepare a request, item, or exact next command for owner review, or ask your owner a question. prepare_action requires the current revision and a supported command. Drafts are private until an owner confirmation. Cannot approve, pay, buy labels or set provider facts. Stop after preparing one action; resume from state after human input.', {
-  action: z.enum(['state', 'draft_request', 'draft_item', 'ask_owner', 'suggest_preference', 'prepare_action', 'research', 'prepare_service_action', 'prepare_shipping_validation']),
+  action: z.enum(['state', 'draft_request', 'draft_item', 'ask_owner', 'suggest_preference', 'prepare_action', 'research', 'prepare_service_action', 'prepare_shipping_validation', 'prepare_shipping_rates']),
   input: draftRequestSchema.optional(), exchangeId: z.uuid().optional(),
   item: itemSchema.optional(), question: z.string().min(1).max(500).optional(),
   key: z.string().optional(), value: z.string().optional(), provenance: z.string().optional(),
   revision: z.number().int().positive().optional(), command: preparedCommandSchema.optional(), explanation: z.string().min(1).max(500).optional(),
   research: researchInputSchema.optional(),
   connectionId:z.uuid().optional(),tool:z.string().min(1).max(128).optional(),arguments:z.record(z.string(),z.unknown()).optional(),
-  consentId:z.uuid().optional(),descriptionActionId:z.uuid().optional(),addressRole:z.enum(['buyer','seller']).optional(),
+  sourceActionId:z.uuid().optional(),consentId:z.uuid().optional(),descriptionActionId:z.uuid().optional(),addressRole:z.enum(['buyer','seller']).optional(),
 });
 
 await server.connect(new StdioServerTransport());

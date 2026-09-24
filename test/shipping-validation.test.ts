@@ -11,10 +11,10 @@ describe('independent free address validation contract',()=>{
   it('admits only the observed supported wrapper and exact address operation',()=>{
     expect(()=>requireAddressValidationContract('https://mcp.shippo.com/',invocation)).not.toThrow();
     for(const endpoint of ['https://mcp.shippo.com.evil.com/','https://mcp.shippo.com/unknown','https://mcp.vendor.com/']) {
-      expect(()=>requireAddressValidationContract(endpoint,invocation)).toThrow('supported free');
+      expect(()=>requireAddressValidationContract(endpoint,invocation)).toThrow('supported operation');
     }
     for(const name of ['GetTrack','CreateAddress','CreateTransaction','ValidateAddressByID']) {
-      expect(()=>requireAddressValidationContract('https://mcp.shippo.com/',{...invocation,arguments:{...invocation.arguments,name}})).toThrow('supported free');
+      expect(()=>requireAddressValidationContract('https://mcp.shippo.com/',{...invocation,arguments:{...invocation.arguments,name}})).toThrow('supported operation');
     }
     expect(()=>requireAddressValidationContract('https://mcp.shippo.com/',{...invocation,arguments:{...invocation.arguments,extra:'anything'}})).toThrow();
     expect(()=>requireAddressValidationContract('https://mcp.shippo.com/',{...invocation,arguments:{name:'ValidateAddress',arguments:{...args,phone:'unapproved'}}})).toThrow();

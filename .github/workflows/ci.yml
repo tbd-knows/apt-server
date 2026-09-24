@@ -39,6 +39,7 @@ jobs:
       - run: npm run test:connections-db
       - run: npm run test:service-actions-db
       - run: npm run test:shipping-consent-db
+      - run: npm run test:shipping-rates-db
       - run: npm run test:research-safety
       - run: npm run test:commerce-db
       - run: npm run test:commerce-worker

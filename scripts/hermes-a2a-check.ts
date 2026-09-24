@@ -114,6 +114,8 @@ async function send(index: number, text: string, contextId: string, token?: stri
       message: { messageId: randomUUID(), role: 'ROLE_USER', contextId, parts: [{ text }] } } }), signal: AbortSignal.timeout(15000) });
 }
 try {
+  const existing=(await pool.query('select count(*)::int n from pilot_exchanges')).rows[0].n;
+  assert.equal(existing,0,'Run test:local-db immediately before test:hermes-a2a. Earlier commerce fixtures can delay its bounded A2A delivery check.');
   for (let i=0;i<2;i++) {
     await execute(cli, ['profile','create',profiles[i]!, '--no-alias','--no-skills'], { env: { ...process.env, HERMES_HOME: home }, timeout: 60000 });
     const directory = join(home,'profiles',profiles[i]!);

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { shippoPayload, shippoMinorUnits, shippoShipmentArguments, shippoShipment, shippoRate, shippoCarrier,
   shippoTransaction, shippoAddressArguments,shippoAddressValidation,type ShippoShipmentBinding, type ShippoTransactionBinding } from '../src/commerce/shippo-evidence.js';
+import { shippingRatesReceipt } from '../src/commerce/shipping-rates.js';
 import type { ServiceResult } from '../src/commerce/mcp-execution.js';
 
 const now = new Date('2026-09-24T12:00:00Z');
@@ -103,6 +104,10 @@ describe('Shippo authenticated response evidence (fixtures, no provider requests
         .toEqual({ state: status === 'ERROR' ? 'error' : 'pending', shipmentId: 'shipment_123' });
     }
     expect(() => shippoShipment(receipt({ ...shipment(), rates: [] }), binding, now)).toThrow('Shipping evidence');
+  });
+  it('rejects a private address reflected into an otherwise valid public rate name',()=>{
+    const data=shipment();data.rates[0]!.provider=binding.destination.street1;
+    expect(()=>shippingRatesReceipt(receipt(data),binding)).toThrow('private input');
   });
   it('requires a QR request before allowing the no-printer rate path', () => {
     const noPrinter = { ...binding, packing: { ...binding.packing, canPrint: false } };

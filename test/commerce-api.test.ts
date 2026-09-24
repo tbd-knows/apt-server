@@ -61,6 +61,9 @@ describe('commerce API and isolated agent delivery', () => {
       const validation=await app.inject({method:'POST',url,headers:{authorization:'Bearer token-a'},payload:{approve:true,digest,approveFreeAddressValidation:true}});
       expect(validation.statusCode).toBe(200);
       expect(decide).toHaveBeenCalledWith(USER_A,USER_A,digest,true,'free_address_validation');
+      expect((await app.inject({method:'POST',url,headers:{authorization:'Bearer token-a'},payload:{approve:true,digest,approveFreeShippingRates:true}})).statusCode).toBe(200);
+      expect(decide).toHaveBeenCalledWith(USER_A,USER_A,digest,true,'free_shipping_rates');
+      expect((await app.inject({method:'POST',url,headers:{authorization:'Bearer token-a'},payload:{approve:true,digest,approveFreeShippingRates:true,approveFreeAddressValidation:true}})).statusCode).toBe(400);
       expect((await app.inject({method:'POST',url,headers:{authorization:'Bearer token-a'},payload:{approve:true,digest,approveFreeAddressValidation:true,approveCapabilityDiscovery:true}})).statusCode).toBe(400);
     } finally {decide.mockRestore();}
   });

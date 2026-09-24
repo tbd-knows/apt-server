@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { conflict,digest,exchangeView,requireRole,type Address } from './domain.js';
 import type { CommerceService } from './service.js';
 import type { ServiceActionRow } from './service-actions.js';
-import { serviceActionView,wakeServiceAction } from './service-actions.js';
+import { serviceActionView,wakeServiceAction,expireServiceReviews } from './service-actions.js';
 import { requireShippingDataConsent } from './shipping-consent.js';
 import { shippoAddressArguments } from './shippo-evidence.js';
 import type { ServiceInvocation } from './mcp-execution.js';
@@ -15,32 +15,35 @@ export const shippingValidationSchema=z.object({action:z.literal('prepare_shippi
 
 /** Match the schema actually returned by authenticated discovery. Unknown
  * wrapper layouts are unavailable, never guessed from a model's prose. */
-export function requireAddressValidationContract(endpoint:string,invocation:ServiceInvocation) {
+export function requireShippoWrapper(endpoint:string,invocation:ServiceInvocation,kind:'read'|'write',operation:string) {
   if(!publicEndpoint(endpoint)) conflict('Unsupported service endpoint.');
   const url=new URL(endpoint),schema=invocation.tool.inputSchema;
   const property=z.object({type:z.string()}).passthrough();
   const parsed=z.object({type:z.literal('object'),properties:z.object({name:property,arguments:property}).strict(),
     required:z.array(z.string()),additionalProperties:z.boolean().optional()}).passthrough().safeParse(schema);
   if(url.hostname!=='mcp.shippo.com' || !['/','/mcp'].includes(url.pathname)
-    || invocation.tool.name!=='shippo_read_execute_tool' || !parsed.success || parsed.data.properties.name.type!=='string'
+    || invocation.tool.name!==`shippo_${kind}_execute_tool` || !parsed.success || parsed.data.properties.name.type!=='string'
     || parsed.data.properties.arguments.type!=='object' || digest([...parsed.data.required].sort())!==digest(['arguments','name'])
     || Object.keys(schema).some(key=>!['type','properties','required','additionalProperties','description','title','$schema'].includes(key))
-    || digest(Object.keys(invocation.arguments).sort())!==digest(['arguments','name']) || invocation.arguments.name!=='ValidateAddress') {
-    conflict('The inspected service does not expose a supported free address-validation contract.');
+    || digest(Object.keys(invocation.arguments).sort())!==digest(['arguments','name']) || invocation.arguments.name!==operation) {
+    conflict('The inspected service does not expose the supported operation contract.');
   }
+}
+export function requireAddressValidationContract(endpoint:string,invocation:ServiceInvocation) {
+  requireShippoWrapper(endpoint,invocation,'read','ValidateAddress');
   const argumentsSchema=z.object({address_line_1:z.string(),address_line_2:z.string(),city_locality:z.string(),
     state_province:z.string(),postal_code:z.string(),country_code:z.literal('US'),name:z.string()}).strict();
   if(!argumentsSchema.safeParse(invocation.arguments.arguments).success) conflict('Unsupported address validation arguments.');
 }
 
-/** Accept only an actual stored describe-tool receipt naming ValidateAddress.
+/** Accept only an actual stored describe-tool receipt naming the operation.
  * Description prose and schemas cannot widen the independently verified policy.
  * Unsupported response representations fail closed for subsequent investigation. */
-export function requireAddressDescription(row:ServiceActionRow) {
-  const descriptor=z.object({name:z.literal('ValidateAddress'),kind:z.literal('read'),
+export function requireShippoDescription(row:ServiceActionRow,operation:string,kind:'read'|'write',fields:Record<string,string>) {
+  const descriptor=z.object({name:z.literal(operation),kind:z.literal(kind),
     inputSchema:z.object({type:z.literal('object'),properties:z.record(z.string(),z.unknown()),required:z.array(z.string()).optional()}).passthrough()}).passthrough();
   if(row.state!=='returned' || row.invocation.tool.name!=='shippo_describe_tool' || !row.result || row.result.omittedContentTypes.length) {
-    conflict('Describe the service address-validation operation first.');
+    conflict('Describe the service operation first.');
   }
   const values:unknown[]=[];
   if(row.result.structuredContent) values.push(row.result.structuredContent);
@@ -50,11 +53,16 @@ export function requireAddressDescription(row:ServiceActionRow) {
   if(!values.length || values.some(value=>digest(value)!==digest(values[0]))) conflict('The service operation description is ambiguous.');
   const result=descriptor.safeParse(values[0]);
   if(!result.success) conflict('The service operation description has an unsupported format.');
-  const schema=result.data.inputSchema,allowed=Object.keys(shippoAddressArguments({name:'Fixture',street1:'1 Main St',street2:'',city:'Boston',state:'MA',zip:'02110',country:'US',phone:'+16175550101'}));
+  const schema=result.data.inputSchema,allowed=Object.keys(fields);
   if((schema.required ?? []).some(key=>!allowed.includes(key)) || allowed.some(key=>
-    !z.object({type:z.literal('string')}).passthrough().safeParse(schema.properties[key]).success)) {
-    conflict('The described address inputs are not supported.');
+    !z.object({type:z.literal(fields[key]!)}).passthrough().safeParse(schema.properties[key]).success)) {
+    conflict('The described operation inputs are not supported.');
   }
+}
+
+export function requireAddressDescription(row:ServiceActionRow) {
+  const fields=Object.fromEntries(Object.keys(shippoAddressArguments({name:'Fixture',street1:'1 Main St',street2:'',city:'Boston',state:'MA',zip:'02110',country:'US',phone:'+16175550101'})).map(key=>[key,'string']));
+  requireShippoDescription(row,'ValidateAddress','read',fields);
 }
 
 export async function prepareShippingValidation(commerce:CommerceService,actor:string,turnId:string,raw:unknown) {
@@ -74,6 +82,7 @@ export async function prepareShippingValidation(commerce:CommerceService,actor:s
     }
     const connection=(await sql.query<{inspection:{tools:ServiceInvocation['tool'][]};generation:string;endpoint:string}>(
       'select inspection,generation,endpoint from pilot_connections where id=$1',[input.connectionId])).rows[0]!;
+    await expireServiceReviews(commerce,sql,e,actor,input.connectionId,connection.generation);
     const described=(await sql.query<ServiceActionRow>(`select * from pilot_service_actions where id=$1 and connection_id=$2 and owner_id=$3
       and exchange_id=$4 and mode=$5 and generation=$6`,[input.descriptionActionId,input.connectionId,actor,e.id,e.mode,connection.generation])).rows[0];
     if(!described) conflict('Describe the connected service operation first.');

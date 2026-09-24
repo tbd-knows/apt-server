@@ -29,6 +29,7 @@
     "test:mcp-inspection-db": "node --import tsx scripts/mcp-inspection-db-check.ts",
     "test:connections-db": "node --import tsx scripts/connections-db-check.ts",
     "test:service-actions-db": "node --import tsx scripts/service-actions-db-check.ts",
+    "test:shipping-rates-db": "node --import tsx scripts/shipping-rates-db-check.ts",
     "test:shipping-consent-db": "node --import tsx scripts/shipping-consent-db-check.ts",
     "test:research-safety": "python3 scripts/research-safety-check.py",
     "test:local-db": "node --import tsx scripts/local-db-check.ts",

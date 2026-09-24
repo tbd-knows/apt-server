@@ -18,9 +18,12 @@ Both owners can approve exact private shipping-form versions for free
 validation/rate lookup through a reviewed seller service account. Typed free
 address validation now uses that consent, a separately reviewed action and the
 actual MCP SDK; response corrections stay in the affected owner's private form.
-Authenticated production schema compatibility remains unverified. Shippo rate,
-shipment and purchased-artifact evidence validation is tested as an adapter
-component and is not yet wired into the fulfillment worker.
+Free rate creation and pending-shipment retrieval now run through the same
+approved SDK harness, returning private-data-minimized carrier/price options.
+Authenticated production schema compatibility remains unverified. Rate selection,
+paid labels and purchased-artifact integration into the fulfillment worker remain
+incomplete. Hosted-service rates are explicitly live-provider evidence even when
+the surrounding commerce exchange is in test mode.
 Funding/execution of discovered fulfillment remains incomplete.
 See [service discovery and connections](agent-service-research.md). No founder
 provider credentials are configured, and no sandbox payment,

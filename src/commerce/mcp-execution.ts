@@ -9,6 +9,7 @@ import { publicEndpoint,publicEndpointFetch } from './public-http.js';
 export interface ServiceInvocation {
   tool:McpInspection['tools'][number];
   arguments:Record<string,unknown>;
+  shippingRates?: { consentId:string; descriptionActionId:string; operationId:string; sourceActionId?:string };
   shippingValidation?: { consentId:string; addressOwnerId:string; addressVersion:number; descriptionActionId:string };
 }
 export interface ServiceResult {
