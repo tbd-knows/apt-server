@@ -10,9 +10,11 @@ complete intelligent discovery/fulfillment experience.
 
 Stripe is the only mandatory commerce-provider integration. The EasyPost/FedEx
 adapter documented below is an optional existing execution path, not the target
-product's required setup. Dynamic source discovery is implemented; actual MCP/API
-capability inspection, per-user connection and funding/execution of alternative
-fulfillment are still being implemented. No provider credentials are configured, and no sandbox payment,
+product's required setup. Dynamic source discovery, owner-approved remote MCP
+capability inspection and owner-scoped OAuth connections are implemented with
+fixture validation. Funding/execution of discovered fulfillment remains incomplete.
+See [service discovery and connections](agent-service-research.md). No founder
+provider credentials are configured, and no sandbox payment,
 real postage purchase, live migration or live transaction has been verified.
 
 ## Authority and baseline

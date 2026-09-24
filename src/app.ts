@@ -14,6 +14,8 @@ import type { CommerceService } from './commerce/service.js';
 import { commerceRoutes } from './commerce/routes.js';
 import type { CommerceAssets } from './commerce/assets.js';
 import { setupRoutes } from './commerce/setup.js';
+import { connectionRoutes } from './commerce/connection-routes.js';
+import { CommerceConnections } from './commerce/connections.js';
 import type { StripeProvider } from './commerce/providers.js';
 import { CommerceA2A } from './commerce/a2a.js';
 import { verifyA2ABridgeToken } from './commerce/a2a-auth.js';
@@ -56,7 +58,10 @@ export interface AppDependencies {
 
 export async function buildApp(dependencies: AppDependencies): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: { level: dependencies.config.logLevel, redact: ['req.headers.authorization'] },
+    logger: { level: dependencies.config.logLevel, redact: ['req.headers.authorization'],
+      serializers:{req:(request:{method:string;url:string})=>({
+        method:request.method,url:request.url.split('?')[0] ?? '',
+      })} },
     bodyLimit: 64_000,
   });
   const manager = new RunManager(dependencies.repository, dependencies.runtime, app.log, dependencies.memoryService);
@@ -111,6 +116,8 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   };
 
   if (dependencies.commerceService) commerceRoutes(app, dependencies.commerceService, authenticate, dependencies.commerceAssets);
+  if (dependencies.commerceService && dependencies.commerceStripe?.config.publicUrl) connectionRoutes(app,
+    new CommerceConnections(dependencies.commerceService,dependencies.config.hermes.keySecret,dependencies.commerceStripe.config.publicUrl),authenticate);
   if (dependencies.commerceService && dependencies.commerceStripe) setupRoutes(app, dependencies.commerceService,
     dependencies.commerceStripe, dependencies.commerceStripe.config, authenticate);
 

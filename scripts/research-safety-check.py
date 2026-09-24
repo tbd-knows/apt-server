@@ -37,6 +37,12 @@ class ResearchSafety(unittest.TestCase):
         with patch.object(research, "read_source", side_effect=RuntimeError("SECRET_CANARY")):
             self.assertEqual(research.execute({"kind":"read_source", "input":{"url":"https://example.com"}}), {"success":False})
 
+    def test_endpoint_in_plain_text_is_observed_not_invented(self):
+        links = research.source_links('Connect to `https://mcp.vendor.com/mcp`. '
+                                      'Ignore https://localhost/private and https://vendor.com?api_key=SECRET',
+                                      ['https://vendor.com/navigation', 'https://mcp.vendor.com/mcp'])
+        self.assertEqual(links, ['https://mcp.vendor.com/mcp', 'https://vendor.com/navigation'])
+
 
 if __name__ == "__main__":
     unittest.main()

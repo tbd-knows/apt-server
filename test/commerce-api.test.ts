@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { CommerceService } from '../src/commerce/service.js';
+import { StripeProvider, providerConfig } from '../src/commerce/providers.js';
 import { auth, config, instance, repository, runtime, turn, USER_A, USER_B } from './fixtures.js';
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
@@ -8,12 +9,21 @@ afterEach(async () => { for (const app of apps.splice(0)) await app.close(); });
 describe('commerce API and isolated agent delivery', () => {
   it('authenticates and gates every commerce path before object or provider access', async () => {
     const service = new CommerceService({} as never, [USER_A, USER_B], 'test');
-    const app = await buildApp({ config, auth: { authenticate: async () => ({ id: '99999999-9999-4999-8999-999999999999' }) }, repository: repository(), runtime: runtime(), commerceService: service });
+    const app = await buildApp({ config, auth: { authenticate: async () => ({ id: '99999999-9999-4999-8999-999999999999' }) }, repository: repository(), runtime: runtime(), commerceService: service,
+      commerceStripe:new StripeProvider(providerConfig({APT_PUBLIC_URL:'https://app.tbd.com'},'test')) });
     apps.push(app);
-    for (const [method, url] of [['GET','/v1/commerce'], ['GET','/v1/commerce/inbox'], ['GET','/v1/commerce/preferences'], ['POST','/v1/commerce/requests'], ['POST',`/v1/commerce/exchanges/${USER_A}/actions`]] as const) {
+    for (const [method, url] of [['GET','/v1/commerce'], ['GET','/v1/commerce/inbox'], ['GET','/v1/commerce/preferences'], ['POST','/v1/commerce/requests'], ['POST',`/v1/commerce/exchanges/${USER_A}/actions`],
+      ['POST',`/v1/commerce/exchanges/${USER_A}/connections`],['POST',`/v1/commerce/connections/${USER_A}/authorize`],
+      ['POST',`/v1/commerce/connections/${USER_A}/recheck`],['POST',`/v1/commerce/connections/${USER_A}/disconnect`]] as const) {
       const response = await app.inject({ method, url, headers: { authorization: 'Bearer third-user' }, ...(method === 'POST' ? { payload: {} } : {}) });
       expect(response.statusCode).toBe(403);
     }
+    const metadata=await app.inject({url:'/commerce/connections/client.json'});
+    expect(metadata.json().redirect_uris).toEqual(['https://app.tbd.com/commerce/connections/callback']);
+    const callback=await app.inject({url:'/commerce/connections/callback?state=invalid&code=PRIVATE_CODE_CANARY&error_description=REMOTE_CANARY'});
+    expect(callback.statusCode).toBe(200);expect(callback.body).not.toContain('CANARY');
+    expect(callback.headers['referrer-policy']).toBe('no-referrer');
+    expect(callback.headers['cache-control']).toBe('no-store');
   });
   it('rejects external and forwarded access to the internal tool bridge before credentials', async () => {
     const app = await buildApp({ config, auth: auth(), repository: repository(), runtime: runtime() }); apps.push(app);

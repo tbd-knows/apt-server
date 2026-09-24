@@ -26,6 +26,8 @@
     "test:a2a-db": "node --import tsx scripts/a2a-db-check.ts",
     "test:harness-db": "node --import tsx scripts/harness-db-check.ts",
     "test:research-db": "node --import tsx scripts/research-db-check.ts",
+    "test:mcp-inspection-db": "node --import tsx scripts/mcp-inspection-db-check.ts",
+    "test:connections-db": "node --import tsx scripts/connections-db-check.ts",
     "test:research-safety": "python3 scripts/research-safety-check.py",
     "test:local-db": "node --import tsx scripts/local-db-check.ts",
     "test:commerce-db": "node --import tsx scripts/commerce-db-check.ts",

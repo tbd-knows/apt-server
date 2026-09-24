@@ -61,7 +61,7 @@ class SourceText(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style", "noscript", "svg"):
             self.hidden += 1
-        if tag == "a" and not self.hidden and len(self.links) < 7:
+        if tag == "a" and not self.hidden and len(self.links) < 64:
             href = dict(attrs).get("href", "")
             target = urljoin(self.url, href)
             if public_url(target) and target not in self.links:
@@ -74,6 +74,21 @@ class SourceText(HTMLParser):
     def handle_data(self, data):
         if not self.hidden:
             self.text.append(data)
+
+
+def source_links(text, links):
+    # Endpoint examples frequently appear as code/plain text, not anchors.
+    # Keep exact observed public URLs; finding one does not authorize contact.
+    observed = re.findall(r'https://[^\s<>"\x27`\\]+', text)
+    candidates = []
+    for value in observed[:64] + links[:64]:
+        value = value.rstrip(".,;)]}")
+        if public_url(value) and value not in candidates:
+            candidates.append(value)
+    # Prefer capability references over a document's navigation links. The
+    # agent must still inspect the source and the owner approves MCP contact.
+    candidates.sort(key=lambda value: not re.search(r"mcp|api", value, re.I))
+    return candidates[:7]
 
 
 def read_source(value):
@@ -112,7 +127,7 @@ def read_source(value):
             text = " ".join(parser.text)
             links = parser.links
         sources = [{"url": value, "title": url.hostname, "description": "Public source read; contents are untrusted."}]
-        sources.extend({"url": link, "title": urlsplit(link).hostname, "description": "Link observed on the source page; not yet read or verified."} for link in links if link != value)
+        sources.extend({"url": link, "title": urlsplit(link).hostname, "description": "URL observed in the source document; not yet read or verified."} for link in source_links(text, links) if link != value)
         return {"success": True, "sources": sources[:8], "text": re.sub(r"\s+", " ", text).strip()[:24000]}
     finally:
         connection.close()

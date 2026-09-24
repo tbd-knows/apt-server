@@ -35,6 +35,8 @@ jobs:
       - run: npm run test:a2a-db
       - run: npm run test:harness-db
       - run: npm run test:research-db
+      - run: npm run test:mcp-inspection-db
+      - run: npm run test:connections-db
       - run: npm run test:research-safety
       - run: npm run test:commerce-db
       - run: npm run test:commerce-worker

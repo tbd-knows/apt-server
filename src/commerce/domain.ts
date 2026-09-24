@@ -212,6 +212,7 @@ export const humanCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('retry_delivery'), messageId: z.uuid() }).strict(),
   z.object({ type: z.literal('research_area'), postcode: z.string().regex(/^\d{5}$/) }).strict(),
   z.object({ type: z.literal('retry_research'), researchId: z.uuid() }).strict(),
+  z.object({ type: z.literal('decide_mcp_inspection'), researchId: z.uuid(), inspectionDigest: z.string().length(64), approve: z.boolean() }).strict(),
   z.object({ type: z.literal('approve_agent_action'), actionId: z.uuid(), actionDigest: z.string().length(64) }).strict(),
   z.object({ type: z.literal('dismiss_agent_action'), actionId: z.uuid() }).strict(),
   z.object({ type: z.literal('attach_provider_reference'), operationId: z.uuid(), providerId: z.string().regex(/^(shp_|cs_)[A-Za-z0-9_]+$/), reason: shortText }).strict(),

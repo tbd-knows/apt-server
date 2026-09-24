@@ -52,11 +52,131 @@ shipping state or provider operation.
 
 ## Remaining implementation
 
-Reading documentation is not MCP protocol discovery. The next step is inspection
-of an actual user-authorized service endpoint, authentication/connection where
-supported, and execution with exact approvals and canonical reconciliation.
+Owner-approved remote MCP inspection is now implemented as described below.
+Remote OAuth connections now support owner review, public-client registration,
+PKCE, encrypted credentials, rechecking/refresh and disconnection as described
+below. Fulfillment execution with exact approvals and canonical reconciliation
+remains necessary before this workflow can ship an item.
 Unsupported/credential-required services must remain explicit blockers. In
 particular, the [official UPS MCP](https://github.com/UPS-API/ups-mcp) documents
 tracking/address validation and application credentials; its existence does not
 prove a label or booking capability. No arbitrary downloaded MCP code is installed
 or run by this research path.
+
+## Owner-approved MCP inspection
+
+The agent proposes `kind: inspect_mcp` using an existing research/source ID for an
+observed public HTTPS endpoint. Source reading retains public URLs appearing in
+plain text/code as well as hyperlinks, so an endpoint does not have to appear in
+a search snippet. The model cannot submit a made-up endpoint or a credential.
+
+The proposal becomes an owner-private `awaiting_approval` action. Mobile displays
+the exact endpoint and explains what will be sent: an MCP handshake and tool-list
+requests, without credentials or transaction details. The owner can allow or
+decline. The server checks owner, exchange, mode, current area and an immutable
+inspection digest. Agent tools cannot submit this decision. Approval of inspection
+does not approve a service connection, personal-data disclosure, or purchase.
+
+The database worker uses the pinned MCP SDK's Streamable HTTP client. It performs
+initialization and bounded, paginated tool discovery, retaining tool names,
+descriptions, schemas and a catalogue digest. It does not compile untrusted output
+schemas or execute tools. The client advertises no roots, sampling or elicitation
+capabilities. Server instructions and error prose are not retained. A 401/403 is
+recorded as authorization required, not as a successful connection.
+
+HTTPS requests validate and pin public DNS answers while preserving TLS hostname
+verification, reject mixed private/public answers, credentials, redirects and
+cross-endpoint requests, and bound response bytes, pages, tools and time. Both
+JSON and SSE responses are supported. Local stdio installations are not executed
+from research documents. Unsupported endpoints remain visible failures.
+
+Approval, attempts, lease, timestamps and outcome persist. A fresh worker can
+resume after a crash; concurrent workers cannot claim the same active job.
+Inspection has no financial side effects. Changed discovery areas and closed
+exchanges invalidate unstarted work. Results wake only the owner agent and remain
+`verifiedForFulfillment: false`. A catalogue reports capabilities, not provider
+identity, safe/idempotent execution, paid postage or drop-off compatibility.
+
+Validation: `mcp-inspection.test.ts` exercises the real SDK against local HTTP
+fixtures (JSON, SSE, pagination, hostile sampling request, auth failure and limits).
+`public-http.test.ts` uses a temporary HTTPS fixture certificate to exercise TLS,
+DNS pinning, redirect/credential/response limits. `test:mcp-inspection-db` verifies
+the owner decision, denial, private/mode isolation, model-forgery rejection,
+concurrent claims, restart recovery, changed-area rejection and retained forced
+RLS against disposable PostgreSQL. These are engineering fixtures; no carrier
+account or postage purchase is implied.
+
+Protocol reference: [MCP Streamable HTTP](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+and [tool discovery](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
+
+## Service account connections
+
+For an inspected endpoint requiring authorization, the owner selects “Review
+connection requirements.” The server discovers protected-resource and issuer
+metadata using the pinned MCP SDK. It validates the resource audience, issuer,
+public HTTPS endpoints, PKCE S256 and public-client compatibility. The UI shows
+the service endpoint, account provider, sign-in endpoint and requested scopes.
+A wildcard is explicitly described as full account access. The owner approves
+this exact metadata digest before any client registration or browser flow.
+
+Supported authorization is an OAuth public client: client ID metadata documents
+when supported, otherwise dynamic client registration. Providers requiring
+pre-registered/confidential clients, custom API keys or local stdio credentials
+remain unsupported by this connection path and are shown as such. Nothing
+silently installs downloaded code or invents a successful connection.
+
+`APT_PUBLIC_URL` supplies `/commerce/connections/client.json` and the HTTPS
+`/commerce/connections/callback`. The same existing server root secret
+`HERMES_KEY_SECRET` derives a domain-separated AES-256-GCM credential key; no new
+provider-wide key is required. Back up this root secret securely. Changing it
+requires reconnecting existing service accounts unless an explicit credential
+rotation/migration is implemented. Credentials, PKCE verifiers and temporary
+authorization URLs are encrypted and bound to connection/owner/exchange/mode/
+endpoint. Neither agent state nor mobile GET responses contain them.
+
+The browser state is random, hashed in its lookup column, expires in ten minutes,
+and is consumed once before exchanging the code. Tokens are immediately saved
+encrypted before a post-authorization tool inspection. Account access is shown
+as connected only after that authenticated protocol check succeeds. Credentials
+reflected verbatim by a remote tool catalogue are removed from retained results.
+Callback responses contain no remote prose, code or state; app request logs omit
+query strings. Configure the deployment ingress to omit callback query strings
+from its logs too. Never log request/response bodies or authorization headers.
+
+Owner-triggered rechecking refreshes expired access tokens through the approved
+issuer endpoint. A changed tool catalogue gets a new digest. Failed refresh
+requires reconnection; it does not grant execution permission. Disconnect deletes
+stored credentials and fences late requests using a generation ID. It does not
+reverse purchases or revoke the provider-side OAuth grant; the UI points the
+owner to provider account settings for that additional step.
+
+Connection results and owner wake messages commit together. The existing worker
+converts abandoned discovery/authorization/exchange waits into visible recovery
+actions and invalidates stale callbacks. It does not blindly replay code exchanges
+or rotate refresh tokens after uncertain results. Repeated recovery does not
+produce duplicate notifications. All connection rows force RLS, deny direct
+client access and retain owner/mode checks on every route.
+
+Validation: `connection-oauth.test.ts` exercises SDK discovery, PKCE/resource/
+scope binding, metadata clients, dynamic registration, token refresh, audience/
+issuer denial and authenticated encryption. `test:connections-db` exercises real
+Postgres persistence across separate service instances, replay/expiry/foreign/
+mode rejection, exact metadata approval, credential isolation, refresh failure,
+disconnect races and durable recovery. API tests reject third-party users before
+connection access. No fixture represents a real authorized provider account.
+
+Read-only external probes on September 24, 2026 found:
+
+- Shippo's hosted `https://mcp.shippo.com/` and `/mcp` returned authorization required.
+  The new SDK-based discovery obtained resource `https://mcp.shippo.com/`, issuer
+  `https://goshippo.com/`, authorization/token/dynamic-registration endpoints and
+  scope `*`. No registration, credentials, authorization or shipment was attempted.
+  [Shippo's official guide](https://support.goshippo.com/hc/en-us/articles/51285219216283-Using-Shippo-MCP-Connect-Shippo-to-AI-assistants)
+  documents hosted OAuth and label/rate workflows. Actual account capabilities,
+  test/live mode, idempotency, funding, printing and drop-off still need verification.
+- EasyPost's hosted MCP endpoint returned authorization required and a resource
+  metadata hint; OAuth discovery failed. Its [current official MCP guide](https://docs.easypost.com/guides/mcp-guide)
+  requires a production API key and documents read-only tools. It is not evidence
+  of an OAuth label-purchase path and is not a mandatory platform integration.
+
+Authorization reference: [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).

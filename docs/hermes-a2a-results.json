@@ -15,6 +15,6 @@
   "privateModelMcpPreparation": "pass",
   "humanDecisionRequired": "pass",
   "buyerPrivateCanariesAbsentFromSellerModel": "pass",
-  "publicResearch": "pass: actual keyless search via isolated Hermes, public sample postcode; no fulfillment verification",
-  "testedAt": "2026-09-23T23:01:01.513Z"
+  "publicResearch": "not run",
+  "testedAt": "2026-09-24T03:10:04.353Z"
 }
