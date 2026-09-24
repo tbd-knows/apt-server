@@ -17,9 +17,17 @@ export interface ServiceActionRow {
   result:ServiceResult['result']|null;approved_at:Date|null;expires_at:Date;created_at:Date;updated_at:Date;
 }
 export const serviceActionView=(row:ServiceActionRow)=>({id:row.id,connectionId:row.connection_id,endpoint:row.endpoint,
-  invocation:row.invocation,explanation:row.explanation,digest:row.digest,state:row.state,result:row.result,
+  invocation:row.invocation.shippingValidation ? {tool:{name:row.invocation.tool.name,description:'Validate an approved private shipping address'},
+    arguments:{operation:'ValidateAddress',privateInput:'Resolved from the approved private form; omitted from agent and service-action projections'}} : row.invocation,
+  explanation:row.explanation,digest:row.digest,state:row.state,
+  result:row.invocation.shippingValidation ? validationResultView(row.result) : row.result,
   expiresAt:row.expires_at,updatedAt:row.updated_at,authority:'untrusted_service_result' as const,
-  purpose:'capability_discovery_only' as const});
+  purpose:row.invocation.shippingValidation ? 'free_address_validation' as const : 'capability_discovery_only' as const});
+function validationResultView(result:ServiceActionRow['result']):ServiceActionRow['result'] {
+  const status=result?.structuredContent?.addressValidation;
+  return typeof status==='string' && ['valid','invalid','correction_required'].includes(status)
+    ? {text:[],omittedContentTypes:[],structuredContent:{addressValidation:status}} : null;
+}
 export function activeServiceExchange(e:Exchange) {
   if(['cancelled','declined','expired','completed'].includes(e.stage) || e.cancellationRequested || e.problem) conflict('Resolve the exchange before using a service.');
   if(e.payment==='unpaid' && Date.parse(e.expiresAt)<=Date.now()) conflict('This exchange expired.');

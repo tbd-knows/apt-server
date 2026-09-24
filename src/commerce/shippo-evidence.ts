@@ -55,6 +55,37 @@ export function shippoMinorUnits(value: unknown): number {
   requireEvidence(Number.isSafeInteger(amount) && amount <= 1_000_000);
   return amount;
 }
+export function shippoAddressArguments(address: Address) {
+  const a = parse(addressSchema,address);
+  return { address_line_1:a.street1, address_line_2:a.street2, city_locality:a.city, state_province:a.state,
+    postal_code:a.zip, country_code:a.country, name:a.name };
+}
+/** v2 validation does not return account/mode/object identity. Trust comes from
+ * the server's authenticated connection and exact dispatch binding, plus the
+ * echoed input. Retain any correction only in that address owner's private form. */
+export function shippoAddressValidation(receipt:ServiceResult, address:Address): { status:'valid'|'invalid'|'correction_required'; suggestedAddress?:Address } {
+  const fields=z.object({address_line_1:z.string().max(500),address_line_2:z.string().max(200).nullish(),
+    city_locality:z.string().max(500),state_province:z.string().max(500),postal_code:z.string().max(20),country_code:z.string().max(2),name:z.string().max(500).optional()});
+  const payload=parse(z.object({original_address:fields,recommended_address:fields.nullish(),
+    analysis:z.object({validation_result:z.object({value:z.enum(['valid','invalid','partially_valid'])}),
+      changed_attributes:z.array(z.string().max(100)).max(30).optional()})}),shippoPayload(receipt));
+  const expected=shippoAddressArguments(address);
+  for(const key of ['address_line_1','city_locality','state_province','postal_code','country_code'] as const) {
+    requireEvidence(normal(payload.original_address[key])===normal(expected[key]));
+  }
+  requireEvidence(normal(payload.original_address.address_line_2 ?? '')===normal(expected.address_line_2));
+  if(payload.original_address.name) requireEvidence(normal(payload.original_address.name)===normal(address.name));
+  const recommended=payload.recommended_address;
+  const suggested=recommended ? parse(addressSchema,{...address,street1:recommended.address_line_1,street2:recommended.address_line_2 ?? '',
+    city:recommended.city_locality,state:recommended.state_province,zip:recommended.postal_code,country:recommended.country_code}) : undefined;
+  const changed=!!suggested && ['street1','street2','city','state','zip','country'].some(key=>
+    normal(suggested[key as keyof Address])!==normal(address[key as keyof Address]));
+  if(payload.analysis.validation_result.value==='invalid') return {status:'invalid',...(suggested ? {suggestedAddress:suggested} : {})};
+  if(changed || payload.analysis.validation_result.value==='partially_valid' || payload.analysis.changed_attributes?.length) {
+    return {status:'correction_required',...(suggested ? {suggestedAddress:suggested} : {})};
+  }
+  return {status:'valid'};
+}
 function decimal(value: number): string {
   const text = String(value);
   requireEvidence(/^(0|[1-9]\d*)(\.\d{1,4})?$/.test(text));

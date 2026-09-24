@@ -10,6 +10,11 @@ import { publicEndpoint, publicEndpointFetch } from './public-http.js';
 import { executeMcp,type ServiceResult } from './mcp-execution.js';
 import { activeServiceExchange,serviceActionView,wakeServiceAction,type ServiceActionRow } from './service-actions.js';
 import { requireCapabilityDiscovery } from './service-policy.js';
+import { requireAddressValidationContract } from './shipping-validation.js';
+import { requireShippingDataConsent } from './shipping-consent.js';
+import { shippoAddressArguments,shippoAddressValidation } from './shippo-evidence.js';
+import type { Address } from './domain.js';
+import type { PoolClient } from 'pg';
 
 interface Credentials { client?:OAuthClientInformationMixed; verifier?:string; tokens?:OAuthTokens; authorizationUrl?:string }
 interface ConnectionRow {
@@ -159,7 +164,20 @@ export class CommerceConnections {
       inspection=null,access_expires_at=null,failure=null,generation=$2,updated_at=now() where id=$1 returning *`,[id,randomUUID()]);
     return {ok:true};
   }
-  async decideAction(actor:string,id:string,bindingDigest:string,approve:boolean) {
+  private async checkActionPolicy(sql:PoolClient,row:ServiceActionRow) {
+    if(!row.invocation.shippingValidation) {requireCapabilityDiscovery(row.endpoint,row.invocation);return;}
+    const context=row.invocation.shippingValidation;
+    requireAddressValidationContract(row.endpoint,row.invocation);
+    const e=await this.commerce.repository.get(row.exchange_id,row.owner_id,sql,true);
+    if(row.owner_id!==e.sellerId || ![e.buyerId,e.sellerId].includes(context.addressOwnerId)) conflict('Shipping validation belongs to another participant.');
+    const inputs=await requireShippingDataConsent(this.commerce,sql,e,row.connection_id,context.consentId,new Date());
+    const buyer=context.addressOwnerId===e.buyerId;
+    const address=buyer?inputs.destination:inputs.origin;
+    if(context.addressVersion!==(buyer?e.shippingData!.destinationVersion:e.shippingData!.originVersion)
+      || digest(row.invocation.arguments.arguments)!==digest(shippoAddressArguments(address))) conflict('The approved private shipping inputs changed.');
+    return address;
+  }
+  async decideAction(actor:string,id:string,bindingDigest:string,approve:boolean,purpose:'capability_discovery_only'|'free_address_validation'='capability_discovery_only') {
     this.commerce.authorize(actor);
     const claimed=await this.commerce.repository.transaction(async sql=>{
       const initial=(await sql.query<ServiceActionRow>('select * from pilot_service_actions where id=$1 and owner_id=$2 and mode=$3',[id,actor,this.commerce.mode])).rows[0];
@@ -170,7 +188,8 @@ export class CommerceConnections {
       if(row.digest!==bindingDigest) conflict('Service action details changed. Review them again.');
       if(row.state!=='review') return {row,connection,run:false};
       if(approve) {
-        requireCapabilityDiscovery(row.endpoint,row.invocation);
+        if(purpose!==(row.invocation.shippingValidation?'free_address_validation':'capability_discovery_only')) conflict('Review the correct service action purpose.');
+        await this.checkActionPolicy(sql,row);
         activeServiceExchange(e);
         if(row.revision!==e.revision || row.expires_at<=new Date()) conflict('Service action expired or the exchange changed. Ask your agent to prepare it again.');
         if(connection.owner_id!==actor || connection.exchange_id!==e.id || connection.mode!==e.mode || connection.state!=='connected'
@@ -183,6 +202,8 @@ export class CommerceConnections {
     });
     if(!claimed.run) return serviceActionView(claimed.row);
     let outcome:ServiceResult={state:'failed'};
+    let validatedAddress:Address|undefined;
+    let validation:ReturnType<typeof shippoAddressValidation>|undefined;
     try {
       const tokens=this.credentials(claimed.connection).tokens;
       if(!tokens || !claimed.connection.access_expires_at || claimed.connection.access_expires_at.getTime()<Date.now()+60_000) throw new Error('Recheck service access');
@@ -193,7 +214,7 @@ export class CommerceConnections {
       outcome=await this.execute(claimed.row.endpoint,claimed.row.invocation,async()=>{
         await this.commerce.repository.transaction(async sql=>{
           const e=await this.commerce.repository.get(claimed.row.exchange_id,actor,sql,true);activeServiceExchange(e);
-          requireCapabilityDiscovery(claimed.row.endpoint,claimed.row.invocation);
+          validatedAddress=await this.checkActionPolicy(sql,claimed.row);
           const connection=(await sql.query<ConnectionRow>('select * from pilot_connections where id=$1 for update',[claimed.row.connection_id])).rows[0]!;
           if(e.revision!==claimed.row.revision || claimed.row.expires_at<=new Date() || connection.state!=='connected'
             || connection.generation!==claimed.row.generation || connection.credentials!==claimed.connection.credentials) conflict('Service approval changed before dispatch.');
@@ -201,8 +222,29 @@ export class CommerceConnections {
           if(!sent.rowCount) conflict('This service action is no longer available for dispatch.');
         });
       },publicEndpointFetch(claimed.row.endpoint,{bearer:tokens.access_token}),redact);
+      if(claimed.row.invocation.shippingValidation) {
+        // Raw receipt may echo BOTH private addresses or account secrets. Never
+        // retain it in a service-action response, model context or peer message.
+        if(outcome.state==='returned' && validatedAddress) {
+          try {
+            validation=shippoAddressValidation(outcome,validatedAddress);
+            outcome={state:'returned',result:{text:[],omittedContentTypes:[],structuredContent:{addressValidation:validation.status}}};
+          } catch {outcome={state:'returned_error'};}
+        } else outcome={state:outcome.state};
+      }
     } catch { /* A durable running state below always remains uncertain. */ }
     return this.commerce.repository.transaction(async sql=>{
+      if(validation?.suggestedAddress && claimed.row.invocation.shippingValidation) {
+        const context=claimed.row.invocation.shippingValidation;
+        const e=await this.commerce.repository.get(claimed.row.exchange_id,actor,sql,true);
+        const ownerInput=await this.commerce.repository.privateInput(e,context.addressOwnerId,sql);
+        if(ownerInput.addressVersion===context.addressVersion && e.payment==='unpaid'
+          && e.shippingData?.id===context.consentId && !e.cancellationRequested) {
+          ownerInput.suggestedAddress=validation.suggestedAddress;
+          await this.commerce.repository.savePrivate(sql,e,context.addressOwnerId,ownerInput);
+          await this.commerce.repository.message(sql,e,actor,context.addressOwnerId,'status',{action:'shipping_data_update',text:'Review the address correction in your private shipping form.'});
+        }
+      }
       const result=(await sql.query<ServiceActionRow>(`update pilot_service_actions set
         state=case when $2='failed' and state in ('running','uncertain') then 'uncertain' else $2 end,result=$3,updated_at=now()
         where id=$1 and state in ('verifying','running','uncertain') returning *`,[id,outcome.state,outcome.result ?? null])).rows[0];

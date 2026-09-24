@@ -70,8 +70,9 @@ Shippo service's [operation reference](https://github.com/goshippo/ai/blob/main/
 [response envelope](https://github.com/goshippo/ai/blob/main/skills/shippo/references/response-envelope.md)
 and [published OpenAPI](https://docs.goshippo.com/spec/shippoapi/public-api.yaml).
 This is a tested adapter component; the commerce worker does **not yet call it**
-or enable Shippo rate/label execution. Capability discovery remains the only
-admitted service-action purpose.
+or enable Shippo rate/label execution. A separate free address-validation path
+is integrated through exact two-owner data consent and seller action approval,
+as described below. Generic service execution remains denied.
 
 The component builds shipment parameters from server-resolved private forms,
 without silently rounding dimensions. Receipt checks bind provider account,
@@ -119,14 +120,51 @@ Consent permits only free validation/rate lookup for this exchange, lasts at mos
 Withdrawal, changed address/packing versions, changed/disconnected service access,
 expiry or a closed/paid exchange prevents further use. A server-only helper checks
 both approvals and resolves the private inputs while holding the exchange and
-connection locks. The fulfillment worker still needs to invoke this helper at its
-durable dispatch boundary; consent UI does not mean lookup execution exists.
+connection locks. The typed address-validation path now uses this helper at its
+durable dispatch boundary. Rate/label execution still needs its own integration.
 Withdrawal cannot erase data already disclosed to an external service.
 
 `test:shipping-consent-db` covers real PostgreSQL persistence, model/human and
 owner/peer isolation, exact digest and acknowledgment, two distinct approvals,
 withdrawal, replaced proposals, input/generation/expiry changes and disconnect.
-It asserts no provider operation is queued and no payment/shipment fact changes.
+It also drives the actual MCP SDK against a deterministic endpoint fixture,
+asserts durable claim before disclosure, private correction routing, separate
+purpose approval, no duplicate dispatch and consent withdrawal during preflight.
+No payment/shipment fact changes.
+
+## Free address validation through a connected service
+
+The seller's agent can request `prepare_shipping_validation` with the exchange,
+current revision, connection, consent, successful description-action ID and an
+address role. The model cannot supply address values or arbitrary tool arguments.
+Both owners must already approve their private input versions. The server reads
+the private form and constructs the documented v2 `ValidateAddress` inputs.
+
+The current optional implementation admits only Shippo's official HTTPS endpoint,
+the actual inspected `shippo_read_execute_tool` with the supported flat
+`name`/`arguments` schema, and a stored successful description naming
+`ValidateAddress` as a read with compatible string address inputs. Unsupported
+wrapper/description formats fail closed; they are not guessed. These protocol
+shapes are tested fixtures; actual authenticated hosted-schema compatibility
+remains unverified until an owner connects the service. Description metadata
+cannot admit a different operation, a paid read, address creation or postage.
+
+The seller then reviews a free-validation action. Approval of metadata discovery
+cannot approve this purpose. A fresh MCP session rechecks the actual tool schema;
+immediately before the sole dispatch attempt, the server locks and checks both
+consents, private input versions/values, service credentials and current exchange.
+Withdrawal during preflight prevents disclosure. Timeouts after dispatch remain
+uncertain and are not silently retried.
+
+The provider's v2 envelope must echo the expected original postal input. The
+agent receives only `valid`, `invalid` or `correction_required`. Corrections are
+saved only in the affected owner's private form, without applying them; raw
+provider payloads are discarded. Service-action projections independently omit
+private arguments and allow only the validation status from results. This
+validation sends no phone number because v2 does not accept it. It uses the
+owner's live hosted service account, even for a test-commerce record, and cannot
+create an address record, rate shipment or postage. That distinction is visible
+in the approval card. No real account has been authorized or called in validation.
 
 ## Owner-approved MCP inspection
 

@@ -7,10 +7,12 @@ export function connectionRoutes(app:FastifyInstance,connections:CommerceConnect
   const id=z.object({id:z.uuid()});
   app.post('/v1/commerce/service-actions/:id/decision',options,async(r,reply)=>{
     reply.header('Cache-Control','private, no-store');
-    const body=z.discriminatedUnion('approve',[
+    const body=z.union([
       z.object({digest:z.string().length(64),approve:z.literal(true),approveCapabilityDiscovery:z.literal(true)}).strict(),
+      z.object({digest:z.string().length(64),approve:z.literal(true),approveFreeAddressValidation:z.literal(true)}).strict(),
       z.object({digest:z.string().length(64),approve:z.literal(false)}).strict(),
     ]).parse(r.body);
+    if('approveFreeAddressValidation' in body) return connections.decideAction(r.userId!,id.parse(r.params).id,body.digest,body.approve,'free_address_validation');
     return connections.decideAction(r.userId!,id.parse(r.params).id,body.digest,body.approve);
   });
   app.post('/v1/commerce/exchanges/:id/connections',options,async(r,reply)=>{

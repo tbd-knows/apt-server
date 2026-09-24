@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { shippoPayload, shippoMinorUnits, shippoShipmentArguments, shippoShipment, shippoRate, shippoCarrier,
-  shippoTransaction, type ShippoShipmentBinding, type ShippoTransactionBinding } from '../src/commerce/shippo-evidence.js';
+  shippoTransaction, shippoAddressArguments,shippoAddressValidation,type ShippoShipmentBinding, type ShippoTransactionBinding } from '../src/commerce/shippo-evidence.js';
 import type { ServiceResult } from '../src/commerce/mcp-execution.js';
 
 const now = new Date('2026-09-24T12:00:00Z');
@@ -28,6 +28,21 @@ const transaction = () => ({ object_id: 'txn_123', object_owner: binding.account
   label_url: 'https://deliver.goshippo.com/label.pdf?signature=PRIVATE_ARTIFACT_CANARY', qr_code_url: null as string | null });
 
 describe('Shippo authenticated response evidence (fixtures, no provider requests)', () => {
+  it('validates echoed address inputs and keeps corrections private without silently applying them',()=>{
+    const original_address=shippoAddressArguments(binding.destination);
+    expect(original_address).not.toHaveProperty('phone');
+    const data={original_address,analysis:{validation_result:{value:'valid'}}};
+    expect(shippoAddressValidation(receipt(data),binding.destination)).toEqual({status:'valid'});
+    const recommendation={...original_address,postal_code:'02111-1234'};
+    expect(shippoAddressValidation(receipt({...data,recommended_address:recommendation}),binding.destination))
+      .toEqual({status:'correction_required',suggestedAddress:{...binding.destination,zip:'02111-1234'}});
+    expect(binding.destination.zip).toBe('02111');
+    expect(shippoAddressValidation(receipt({...data,analysis:{validation_result:{value:'invalid'}}}),binding.destination)).toEqual({status:'invalid'});
+    expect(shippoAddressValidation(receipt({...data,analysis:{validation_result:{value:'partially_valid'}}}),binding.destination)).toEqual({status:'correction_required'});
+    expect(()=>shippoAddressValidation(receipt({...data,original_address:{...original_address,address_line_2:''}}),binding.destination)).toThrow('Shipping evidence');
+    expect(()=>shippoAddressValidation(receipt({...data,original_address:{...original_address,postal_code:'10001'}}),binding.destination)).toThrow('Shipping evidence');
+    expect(()=>shippoAddressValidation(receipt({...data,recommended_address:{...recommendation,country_code:'CA'}}),binding.destination)).toThrow('Shipping evidence');
+  });
   it('accepts a single successful provider envelope, including identical MCP text/structured copies', () => {
     const r = receipt({ object_id: 'id' });
     r.result!.text = [JSON.stringify(r.result!.structuredContent)];
