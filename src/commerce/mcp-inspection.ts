@@ -15,6 +15,28 @@ export interface McpInspection {
   authority: 'untrusted_capabilities_only';
 }
 
+export async function readMcpCatalog(client:Client,signal:AbortSignal) {
+  const tools:McpInspection['tools']=[];
+  let cursor:string|undefined,bytes=0;
+  const cursors=new Set<string>(),names=new Set<string>();
+  do {
+    const page=await client.request({method:'tools/list',params:cursor ? {cursor} : {}},ListToolsResultSchema,{signal,timeout:10_000});
+    for(const tool of page.tools) {
+      bytes+=Buffer.byteLength(JSON.stringify(tool));
+      if(bytes>196608 || names.size>=64 || names.has(tool.name) || tool.name.length>128
+        || (tool.description?.length ?? 0)>4000 || Buffer.byteLength(JSON.stringify(tool.inputSchema))>24000
+        || Buffer.byteLength(JSON.stringify(tool.outputSchema ?? {}))>24000) throw new Error('Capability limit');
+      names.add(tool.name);
+      tools.push({name:tool.name,description:tool.description ?? '',inputSchema:tool.inputSchema,
+        ...(tool.outputSchema ? {outputSchema:tool.outputSchema} : {})});
+    }
+    cursor=page.nextCursor;
+    if(cursor && (cursors.has(cursor) || cursors.size>=4 || cursor.length>2048)) throw new Error('Pagination limit');
+    if(cursor) cursors.add(cursor);
+  } while(cursor);
+  return tools.sort((a,b)=>a.name.localeCompare(b.name));
+}
+
 /** Protocol inspection only. No tools/call, roots, sampling, prompts, resources,
  * elicitation, OAuth or credentials. Remote descriptions/annotations are claims,
  * never evidence of permission, provider identity, or safe/idempotent execution. */
@@ -24,7 +46,6 @@ export async function inspectMcp(endpoint: string, fetcher?: FetchLike): Promise
   const signal = AbortSignal.timeout(25_000);
   const fetch = fetcher ?? publicEndpointFetch(endpoint,{exposeChallenge:true});
   let requests = 0;
-  let bytes = 0;
   const transport = new StreamableHTTPClientTransport(new URL(endpoint),{
     fetch: async (url,init) => {
       if (++requests>16 || new URL(url).href !== new URL(endpoint).href) throw new Error('Inspection limit');
@@ -53,28 +74,7 @@ export async function inspectMcp(endpoint: string, fetcher?: FetchLike): Promise
     // while Transport declares it optional; compatible at runtime.
     await client.connect(transport as Transport,{signal,timeout:15_000});
     if (!client.getServerCapabilities()?.tools) return result;
-    let cursor: string | undefined;
-    const cursors = new Set<string>();
-    const names = new Set<string>();
-    do {
-      // Inspect schemas as data. Client.listTools also compiles output schemas
-      // for later execution; inspection deliberately does not compile them.
-      const page = await client.request({method:'tools/list',params:cursor ? {cursor} : {}},ListToolsResultSchema,{signal,timeout:10_000});
-      for (const tool of page.tools) {
-        // Reject instead of silently truncating an incomplete tool schema.
-        bytes += Buffer.byteLength(JSON.stringify(tool));
-        if (bytes>196608 || names.size>=64 || names.has(tool.name) || tool.name.length>128
-          || (tool.description?.length ?? 0)>4000 || Buffer.byteLength(JSON.stringify(tool.inputSchema))>24000
-          || Buffer.byteLength(JSON.stringify(tool.outputSchema ?? {}))>24000) throw new Error('Capability limit');
-        names.add(tool.name);
-        result.tools.push({name:tool.name,description:tool.description ?? '',inputSchema:tool.inputSchema,
-          ...(tool.outputSchema ? {outputSchema:tool.outputSchema} : {})});
-      }
-      cursor = page.nextCursor;
-      if (cursor && (cursors.has(cursor) || cursors.size>=4 || cursor.length>2048)) throw new Error('Pagination limit');
-      if (cursor) cursors.add(cursor);
-    } while (cursor);
-    result.tools.sort((a,b)=>a.name.localeCompare(b.name));
+    result.tools=await readMcpCatalog(client,signal);
     result.schemaDigest = digest(result.tools);
     result.status = 'inspected';
     return result;

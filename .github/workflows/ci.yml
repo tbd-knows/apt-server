@@ -37,6 +37,7 @@ jobs:
       - run: npm run test:research-db
       - run: npm run test:mcp-inspection-db
       - run: npm run test:connections-db
+      - run: npm run test:service-actions-db
       - run: npm run test:research-safety
       - run: npm run test:commerce-db
       - run: npm run test:commerce-worker

@@ -12,6 +12,7 @@ import { CommerceRepository, emptyPrivateInput } from './repository.js';
 import { harnessContext } from './harness.js';
 import { CommerceResearch, researchInputSchema } from './research.js';
 import { listConnections } from './connections.js';
+import { listServiceActions,prepareServiceAction,serviceActionSchema } from './service-actions.js';
 
 export class CommerceService {
   get research() { return new CommerceResearch(this); }
@@ -41,7 +42,7 @@ export class CommerceService {
       case when kind='label_refund' then result->>'refundStatus' else null end as "labelRefundStatus"
       from pilot_operations where exchange_id=$1 order by created_at`, [id])).rows;
     return { ...view, requestDigest: digest(e.request), privateInput: await this.repository.privateInput(e, actor),
-      operations, deliveries: await this.deliveries(actor, id), research: await this.research.list(actor,id),connections:await listConnections(this,actor,id),
+      operations, deliveries: await this.deliveries(actor, id), research: await this.research.list(actor,id),connections:await listConnections(this,actor,id),serviceActions:await listServiceActions(this,actor,id),
       execution: { checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
         returnLabelAvailable: actor === e.buyerId && !!e.returnPlan && ['label_ready','in_transit','delivered'].includes(e.returnPlan.shipping),
         labelAvailable: actor === e.sellerId && e.payment === 'paid' && !e.cancellationRequested && ['label_ready','in_transit','delivered'].includes(e.shipping) } };
@@ -393,7 +394,7 @@ export class CommerceService {
   async pendingAgentMessages() {
     return (await this.repository.pool.query<{ id: string; recipient_id: string; exchange_id: string }>(`select m.id,m.recipient_id,m.exchange_id from pilot_messages m
       join pilot_exchanges e on e.id=m.exchange_id where m.agent_delivered_at is null
-      and (m.sender_id<>m.recipient_id or m.kind='offer' or m.payload->>'action' in ('provider_update','owner_update','research_update','connection_update'))
+      and (m.sender_id<>m.recipient_id or m.kind='offer' or m.payload->>'action' in ('provider_update','owner_update','research_update','connection_update','service_action_update'))
       and (m.sender_id=m.recipient_id or m.a2a_received_at is not null)
       and e.mode=$1 order by m.created_at limit 10`, [this.mode])).rows;
   }
@@ -438,6 +439,7 @@ export class CommerceService {
       z.object({ action: z.literal('prepare_action'), exchangeId: z.uuid(), revision: z.number().int().positive(),
         command: preparedCommandSchema, explanation: z.string().trim().min(1).max(500) }).strict(),
       z.object({ action: z.literal('research'), exchangeId: z.uuid(), research: researchInputSchema }).strict(),
+      serviceActionSchema,
     ]).parse(raw);
     const actor = context.userId;
     if (command.action === 'state') {
@@ -447,7 +449,7 @@ export class CommerceService {
         if (e.mode !== this.mode) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
         const [buyer, seller] = await Promise.all([this.repository.privateInput(e, e.buyerId), this.repository.privateInput(e, e.sellerId)]);
         return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller),
-          deliveries: await this.deliveries(actor, e.id), research: await this.research.list(actor,e.id),connections:await listConnections(this,actor,e.id) };
+          deliveries: await this.deliveries(actor, e.id), research: await this.research.list(actor,e.id),connections:await listConnections(this,actor,e.id),serviceActions:(await listServiceActions(this,actor,e.id)).slice(-5) };
       }));
       const inbox = (await this.inbox(actor)).filter(m => !command.exchangeId || m.exchangeId === command.exchangeId).slice(0, 10)
         .map(m => ({ id: m.id, exchangeId: m.exchangeId, kind: m.kind, text: m.payload.text ?? m.payload.reason ?? m.payload.action ?? null }));
@@ -456,6 +458,7 @@ export class CommerceService {
     }
     if (command.action === 'suggest_preference') return this.preference(actor, { key: command.key, value: command.value, provenance: command.provenance }, true);
     if (command.action === 'research') return this.research.request(actor,command.exchangeId,command.research);
+    if (command.action === 'prepare_service_action') return prepareServiceAction(this,actor,context.requestMessageId,command);
     const key = command.action === 'ask_owner' ? `agent:${context.requestMessageId}:${digest(command)}` : `agent-action:${context.requestMessageId}`;
     if (command.action === 'draft_request') {
       const e = await this.create(actor, key, command.input);

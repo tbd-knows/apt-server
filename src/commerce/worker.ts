@@ -6,6 +6,7 @@ import { CommerceService } from './service.js';
 import { decimalMinor, EasyPostProvider, ProviderFailure, StripeProvider, type PaymentFact, type Shipment } from './providers.js';
 import { FedExLocations } from './locations.js';
 import { recoverConnections } from './connections.js';
+import { recoverServiceActions } from './service-actions.js';
 
 function operation(row: Record<string, unknown>): Operation {
   return { id: String(row.id), exchangeId: String(row.exchange_id), kind: row.kind as Operation['kind'], version: Number(row.version), mode: row.mode as Operation['mode'],
@@ -37,6 +38,7 @@ export class CommerceWorker {
     await this.expireWaiting();
     await this.service.research.inspectPending();
     await recoverConnections(this.service);
+    await recoverServiceActions(this.service);
   }
   async process(op: Operation) {
     // Session lock spans the provider call, but no database transaction does.

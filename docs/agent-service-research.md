@@ -180,3 +180,56 @@ Read-only external probes on September 24, 2026 found:
   of an OAuth label-purchase path and is not a mandatory platform integration.
 
 Authorization reference: [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
+
+## Approved capability operations
+
+Some MCP services expose a meta-API: the initial catalogue describes wrappers,
+and the agent must call a discovery/description wrapper to learn the actual
+operation schema. `prepare_service_action` now persists an owner-private proposal
+with the exact connected endpoint, tool schema, arguments, explanation, exchange
+revision, connection generation, digest and fifteen-minute expiry. The mobile
+Actions view shows those details and requires an explicit authenticated decision.
+The agent can prepare but cannot approve or dispatch.
+
+The current verified execution policy admits only `shippo_list_tools` and
+`shippo_describe_tool` at the official Shippo hosted endpoint. This is an optional
+service discovered by the agent, not a required account or platform credential.
+The [official operation contract](https://github.com/goshippo/ai/blob/main/skills/shippo-best-practices/SKILL.md)
+distinguishes those metadata operations from its read and write execution wrappers.
+Both execution wrappers remain denied: even a read can be billable. A human's
+approval of arbitrary tool arguments cannot replace the offer's exact monetary
+terms, verified payment or postage authorization. New service policies require a
+verified semantic contract, not a remote `readOnly` annotation or model claim.
+
+Before dispatch, the server initializes a fresh authenticated SDK session,
+reloads the bounded catalogue and compares the exact tool schema and description.
+It then rechecks the exchange revision, connection generation, credentials,
+expiry and persisted approval before recording `running`. No network request
+holds a database transaction open. The transport permits at most one tools/call
+attempt; even the SDK's session-expiry recovery cannot replay it. Changing or
+disconnecting the account before dispatch invalidates approval.
+
+The private receipt retains bounded text/structured content, removes verbatim
+credential reflections and wakes only the owner's agent. Remote resource links,
+images and other attachments are not fetched. A returned response is untrusted
+data, not a confirmed shipment or payment. Tool errors and ambiguous transport
+failures remain visibly unresolved. After a crash, the worker expires an
+unstarted check or marks an already-dispatched call uncertain; it does not retry.
+Repeated approval requests return the durable record. Identical operations are
+deduplicated; there is currently no generic repeat/reconciliation override.
+
+Validation: `mcp-execution.test.ts` uses the actual SDK with deterministic JSON/SSE
+fixtures, schema changes, failed approvals, session/auth/server failures and
+oversized receipts. `test:service-actions-db` combines SDK calls with disposable
+Postgres and checks owner/mode isolation, duplicate taps, exact replay, expiry,
+revocation during preflight, credential expiry, crash recovery, private receipts,
+forced RLS and unchanged financial/shipping state. No real service account or
+financial operation has been executed.
+
+Still required: resolve private address/parcel references through explicit
+owner data-sharing authority; implement actual rate/label execution contracts;
+bind exact costs and who funds postage to both parties' offer approvals; persist
+canonical provider evidence, reconcile uncertain purchases, and verify artifacts,
+compatible drop-off, no-printer support, tracking and resolutions. Shippo's hosted
+MCP currently documents live-account purchases and no test mode, so a simulated
+fixture is not a real shipping sandbox run.

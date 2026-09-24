@@ -5,6 +5,14 @@ import { CommerceConnections } from './connections.js';
 export function connectionRoutes(app:FastifyInstance,connections:CommerceConnections,authenticate:(r:FastifyRequest)=>Promise<void>) {
   const options={preHandler:authenticate};
   const id=z.object({id:z.uuid()});
+  app.post('/v1/commerce/service-actions/:id/decision',options,async(r,reply)=>{
+    reply.header('Cache-Control','private, no-store');
+    const body=z.discriminatedUnion('approve',[
+      z.object({digest:z.string().length(64),approve:z.literal(true),approveCapabilityDiscovery:z.literal(true)}).strict(),
+      z.object({digest:z.string().length(64),approve:z.literal(false)}).strict(),
+    ]).parse(r.body);
+    return connections.decideAction(r.userId!,id.parse(r.params).id,body.digest,body.approve);
+  });
   app.post('/v1/commerce/exchanges/:id/connections',options,async(r,reply)=>{
     reply.header('Cache-Control','private, no-store');
     const body=z.object({researchId:z.uuid()}).strict().parse(r.body);

@@ -7,6 +7,9 @@ import { ConnectionOAuth, type ConnectionMetadata } from './connection-oauth.js'
 import { ConnectionSecrets } from './connection-secrets.js';
 import { inspectMcp, type McpInspection } from './mcp-inspection.js';
 import { publicEndpoint, publicEndpointFetch } from './public-http.js';
+import { executeMcp,type ServiceResult } from './mcp-execution.js';
+import { activeServiceExchange,serviceActionView,wakeServiceAction,type ServiceActionRow } from './service-actions.js';
+import { requireCapabilityDiscovery } from './service-policy.js';
 
 interface Credentials { client?:OAuthClientInformationMixed; verifier?:string; tokens?:OAuthTokens; authorizationUrl?:string }
 interface ConnectionRow {
@@ -32,7 +35,8 @@ export class CommerceConnections {
   private readonly secrets:ConnectionSecrets;
   constructor(readonly commerce:CommerceService,rootSecret:string,readonly publicUrl:string,
     private readonly oauth=new ConnectionOAuth(),
-    private readonly inspect=(endpoint:string,token:string)=>inspectMcp(endpoint,publicEndpointFetch(endpoint,{bearer:token}))) {
+    private readonly inspect=(endpoint:string,token:string)=>inspectMcp(endpoint,publicEndpointFetch(endpoint,{bearer:token})),
+    private readonly execute=executeMcp) {
     this.secrets=new ConnectionSecrets(rootSecret);
   }
   private ready() {
@@ -154,6 +158,57 @@ export class CommerceConnections {
     await this.updateAndWake(`update pilot_connections set state='revoked',credentials=null,state_hash=null,
       inspection=null,access_expires_at=null,failure=null,generation=$2,updated_at=now() where id=$1 returning *`,[id,randomUUID()]);
     return {ok:true};
+  }
+  async decideAction(actor:string,id:string,bindingDigest:string,approve:boolean) {
+    this.commerce.authorize(actor);
+    const claimed=await this.commerce.repository.transaction(async sql=>{
+      const initial=(await sql.query<ServiceActionRow>('select * from pilot_service_actions where id=$1 and owner_id=$2 and mode=$3',[id,actor,this.commerce.mode])).rows[0];
+      if(!initial) throw new AppError('NOT_FOUND','Service action not found.');
+      const e=await this.commerce.repository.get(initial.exchange_id,actor,sql,true);exchangeView(e,actor);
+      const connection=(await sql.query<ConnectionRow>('select * from pilot_connections where id=$1 for update',[initial.connection_id])).rows[0]!;
+      const row=(await sql.query<ServiceActionRow>('select * from pilot_service_actions where id=$1 for update',[id])).rows[0]!;
+      if(row.digest!==bindingDigest) conflict('Service action details changed. Review them again.');
+      if(row.state!=='review') return {row,connection,run:false};
+      if(approve) {
+        requireCapabilityDiscovery(row.endpoint,row.invocation);
+        activeServiceExchange(e);
+        if(row.revision!==e.revision || row.expires_at<=new Date()) conflict('Service action expired or the exchange changed. Ask your agent to prepare it again.');
+        if(connection.owner_id!==actor || connection.exchange_id!==e.id || connection.mode!==e.mode || connection.state!=='connected'
+          || connection.generation!==row.generation || connection.endpoint!==row.endpoint) conflict('Service access changed. Review the connection again.');
+      }
+      const updated=(await sql.query<ServiceActionRow>(`update pilot_service_actions set state=$2,approved_at=$3,updated_at=now() where id=$1 returning *`,
+        [id,approve?'verifying':'declined',approve?new Date():null])).rows[0]!;
+      if(!approve) await wakeServiceAction(this.commerce,sql,updated);
+      return {row:updated,connection,run:approve};
+    });
+    if(!claimed.run) return serviceActionView(claimed.row);
+    let outcome:ServiceResult={state:'failed'};
+    try {
+      const tokens=this.credentials(claimed.connection).tokens;
+      if(!tokens || !claimed.connection.access_expires_at || claimed.connection.access_expires_at.getTime()<Date.now()+60_000) throw new Error('Recheck service access');
+      const redact=(value:string)=>{
+        for(const secret of [tokens.access_token,tokens.refresh_token]) if(secret) value=value.replaceAll(JSON.stringify(secret).slice(1,-1),'[credential removed]');
+        return value;
+      };
+      outcome=await this.execute(claimed.row.endpoint,claimed.row.invocation,async()=>{
+        await this.commerce.repository.transaction(async sql=>{
+          const e=await this.commerce.repository.get(claimed.row.exchange_id,actor,sql,true);activeServiceExchange(e);
+          requireCapabilityDiscovery(claimed.row.endpoint,claimed.row.invocation);
+          const connection=(await sql.query<ConnectionRow>('select * from pilot_connections where id=$1 for update',[claimed.row.connection_id])).rows[0]!;
+          if(e.revision!==claimed.row.revision || claimed.row.expires_at<=new Date() || connection.state!=='connected'
+            || connection.generation!==claimed.row.generation || connection.credentials!==claimed.connection.credentials) conflict('Service approval changed before dispatch.');
+          const sent=await sql.query("update pilot_service_actions set state='running',updated_at=now() where id=$1 and state='verifying' returning id",[id]);
+          if(!sent.rowCount) conflict('This service action is no longer available for dispatch.');
+        });
+      },publicEndpointFetch(claimed.row.endpoint,{bearer:tokens.access_token}),redact);
+    } catch { /* A durable running state below always remains uncertain. */ }
+    return this.commerce.repository.transaction(async sql=>{
+      const result=(await sql.query<ServiceActionRow>(`update pilot_service_actions set
+        state=case when $2='failed' and state in ('running','uncertain') then 'uncertain' else $2 end,result=$3,updated_at=now()
+        where id=$1 and state in ('verifying','running','uncertain') returning *`,[id,outcome.state,outcome.result ?? null])).rows[0];
+      if(result) {await wakeServiceAction(this.commerce,sql,result);return serviceActionView(result);}
+      return serviceActionView((await sql.query<ServiceActionRow>('select * from pilot_service_actions where id=$1',[id])).rows[0]!);
+    });
   }
   private async finishInspection(row:ConnectionRow,state:string,inspection:McpInspection) {
     return this.updateAndWake(`update pilot_connections set state=$3,inspection=$4,updated_at=now(),failure=$5
