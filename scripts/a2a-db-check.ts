@@ -50,7 +50,16 @@ try {
   await transport.receive(profiles[1]!, receipt);
   await transport.receive(profiles[1]!, { ...receipt, taskId: 'replay' });
   assert.equal((await pool.query('select a2a_task_id from pilot_messages where id=$1', [messageId])).rows[0].a2a_task_id, 'first-task');
-  assert((await commerce.pendingAgentMessages()).some(m=>m.id===messageId));
+  // The fair scheduler returns one oldest wake per owner, so acknowledge prior
+  // disposable-fixture wakes before asserting this newly received message.
+  let reached = false;
+  for (let n=0;n<100;n++) {
+    const pending = (await commerce.pendingAgentMessages()).find(m=>m.recipient_id===actors[1]);
+    assert(pending, 'Expected a received message to remain queued');
+    if (pending.id===messageId) { reached=true; break; }
+    await commerce.markAgentDelivered(pending.id);
+  }
+  assert(reached, 'Received message was starved by older fixture notifications');
   assert.equal((await commerce.get(actors[0]!, draft.id)).deliveries.find(m=>m.id===messageId)?.state, 'received');
   assert.deepEqual((await commerce.get(actors[1]!, draft.id)).deliveries, []);
   process.stdout.write('PASS: A2A authorization, mode/owner isolation, leases, bounded retry, receipt replay and durable wake eligibility.\n');

@@ -8,6 +8,21 @@ import { auth, config, instance, repository, runtime, turn, USER_A, USER_B } fro
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => { for (const app of apps.splice(0)) await app.close(); });
 describe('commerce API and isolated agent delivery', () => {
+  it('continues to the other owner when one profile fails, leaving the failed wake pending', async () => {
+    const idA = '88888888-8888-4888-8888-888888888888', idB = '99999999-9999-4999-8999-999999999999';
+    const delivered = vi.fn(async () => {});
+    const commerce = { authorize: vi.fn(), pendingAgentMessages: async () => [
+      { id: idA, recipient_id: USER_A, exchange_id: idA }, { id: idB, recipient_id: USER_B, exchange_id: idB },
+    ], markAgentDelivered: delivered } as unknown as CommerceService;
+    const getAgentInstance = vi.fn(async (actor: string) => {
+      if (actor === USER_A) throw new Error('PRIVATE_UPSTREAM_FAILURE');
+      return { ...instance, userId: USER_B, hermesProfileName: 'apt-user-b' };
+    });
+    const app = await buildApp({ config, auth: auth(), repository: repository({ getAgentInstance }), runtime: runtime(), commerceService: commerce });
+    apps.push(app); await app.ready();
+    await vi.waitFor(() => expect(delivered).toHaveBeenCalledWith(idB));
+    expect(delivered).not.toHaveBeenCalledWith(idA);
+  });
   it('authenticates and gates every commerce path before object or provider access', async () => {
     const service = new CommerceService({} as never, [USER_A, USER_B], 'test');
     const app = await buildApp({ config, auth: { authenticate: async () => ({ id: '99999999-9999-4999-8999-999999999999' }) }, repository: repository(), runtime: runtime(), commerceService: service,

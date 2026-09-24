@@ -68,6 +68,7 @@ export interface Exchange {
   resolution?: { id: string; remedy: 'resume' | 'refund' | 'return' | 'absorb_postage'; reason: string; offerDigest: string; amount: number;
     currency: 'USD'; expiresAt: string; approvedBy: string[] };
   returnPlan?: ReturnPlan;
+  shippingData?: ShippingDataConsent;
   createdAt: string; updatedAt: string; expiresAt: string;
 }
 export interface PrivateInput {
@@ -87,7 +88,13 @@ export const preparedCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('problem'), reason: shortText }).strict(),
   z.object({ type: z.literal('quote') }).strict(),
   z.object({ type: z.literal('checkout') }).strict(),
+  z.object({ type: z.literal('propose_shipping_data'), connectionId: z.uuid() }).strict(),
 ]);
+export interface ShippingDataConsent {
+  id: string; connectionId: string; generation: string; endpoint: string; accountOwnerId: string;
+  originVersion: number; destinationVersion: number; packingVersion: number;
+  expiresAt: string; digest: string; approvedBy: string[]; declined: boolean;
+}
 export interface PreparedAction {
   id: string; revision: number; command: z.infer<typeof preparedCommandSchema>;
   explanation: string; expiresAt: string; digest: string;
@@ -196,6 +203,9 @@ export function exchangeView(exchange: Exchange, userId: string) {
 }
 
 export const humanCommandSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('propose_shipping_data'), connectionId: z.uuid() }).strict(),
+  z.object({ type: z.literal('decide_shipping_data'), consentId: z.uuid(), consentDigest: z.string().length(64),
+    approve: z.boolean(), acknowledgeServiceAccountAccess: z.boolean().optional() }).strict(),
   z.object({ type: z.literal('share_request'), requestDigest: z.string().length(64) }).strict(),
   z.object({ type: z.literal('decline'), reason: shortText }).strict(),
   z.object({ type: z.literal('share_item'), item: itemSchema }).strict(),

@@ -63,6 +63,71 @@ tracking/address validation and application credentials; its existence does not
 prove a label or booking capability. No arbitrary downloaded MCP code is installed
 or run by this research path.
 
+## Shipping evidence contract under integration
+
+`shippo-evidence.ts` implements typed receipt checks against the optional hosted
+Shippo service's [operation reference](https://github.com/goshippo/ai/blob/main/skills/shippo/references/tool-reference.md),
+[response envelope](https://github.com/goshippo/ai/blob/main/skills/shippo/references/response-envelope.md)
+and [published OpenAPI](https://docs.goshippo.com/spec/shippoapi/public-api.yaml).
+This is a tested adapter component; the commerce worker does **not yet call it**
+or enable Shippo rate/label execution. Capability discovery remains the only
+admitted service-action purpose.
+
+The component builds shipment parameters from server-resolved private forms,
+without silently rounding dimensions. Receipt checks bind provider account,
+test/live mode, operation metadata, shipment/rate/parcel identities, exact postal
+inputs, USD minor-unit amounts and rate age. Returned rate evidence omits full
+addresses, provider account identity and raw response bodies. Material address
+corrections require the private owner form to be corrected before acceptance.
+Queued/error/refund states remain distinct from a purchased label. The supported
+domestic no-printer artifact contract requires a requested, provider-issued USPS
+printing QR; a PDF or tracking barcode does not satisfy it. Artifact URLs remain
+private and require a separate bounded downloader before mobile delivery.
+
+The [hosted MCP documentation](https://docs.goshippo.com/guides/mcp-server) says
+rate comparisons and address validation are free, but label purchases use a live
+account and hosted MCP has no separate test mode. Test-commerce approval must
+never authorize live postage. This component's fixture coverage of both modes is
+not a claim that hosted Shippo supports sandbox calls.
+
+Remaining integration must resolve the actual authenticated meta-tool schemas,
+consume both owners' exact data-sharing consent at dispatch, record which account funds
+postage, bind separate spending permission to provider-confirmed Stripe payment,
+persist operation identity before dispatch and reconcile ambiguous outcomes.
+The metadata field used here is a correlation identifier, **not** provider
+idempotency. Do not replay a purchase because parsing or transport failed. A rate
+and artifact alone do not verify a compatible drop-off location or delivery.
+
+## Two-owner shipping data consent
+
+The seller's agent can prepare `propose_shipping_data` with a connected service
+reference through the existing owner-approved action mechanism. Confirming that
+proposal asks both owners to review their own private shipping form. The app
+names the exact endpoint and explicitly explains that data sent through the
+seller's service account may be retained there and visible to the seller.
+
+Each human must separately approve the current proposal digest and acknowledge
+that access. The existing exchange aggregate stores only the service connection,
+its generation, private input version numbers, expiry and owner approvals; it
+does not duplicate the addresses. Participants see only their own address in the
+review card. Agents see readiness and consent state, never either full address.
+Approved proposal/decision references reach the peer through Hermes A2A. Private
+shipping inputs do not appear in those messages or events.
+
+Consent permits only free validation/rate lookup for this exchange, lasts at most
+30 minutes, and never enqueues a quote, purchase or financial operation by itself.
+Withdrawal, changed address/packing versions, changed/disconnected service access,
+expiry or a closed/paid exchange prevents further use. A server-only helper checks
+both approvals and resolves the private inputs while holding the exchange and
+connection locks. The fulfillment worker still needs to invoke this helper at its
+durable dispatch boundary; consent UI does not mean lookup execution exists.
+Withdrawal cannot erase data already disclosed to an external service.
+
+`test:shipping-consent-db` covers real PostgreSQL persistence, model/human and
+owner/peer isolation, exact digest and acknowledgment, two distinct approvals,
+withdrawal, replaced proposals, input/generation/expiry changes and disconnect.
+It asserts no provider operation is queued and no payment/shipment fact changes.
+
 ## Owner-approved MCP inspection
 
 The agent proposes `kind: inspect_mcp` using an existing research/source ID for an

@@ -63,5 +63,22 @@ try {
   await assert.rejects(prepare(A,draft.id,{type:'approve',binding:{amount:1}}));
   await assert.rejects(prepare(A,draft.id,{type:'mark_paid'}));
   assert((await service().pendingAgentMessages()).some(m=>m.recipient_id===B));
-  process.stdout.write('PASS: private durable agent actions, owner-only exact approval, stale/expired/replay denial, one draft per turn, normal payment guards and owner resume.\n');
+  // One unavailable/busy owner must never consume the whole scheduler window.
+  // This also exercises backlogs remaining after earlier disposable DB suites.
+  const oldestA = randomUUID(), oldestB = randomUUID();
+  const backlog = [oldestA, ...Array.from({length: 24}, () => randomUUID())];
+  for (const [index,id] of backlog.entries()) await pool.query(`insert into pilot_messages(id,exchange_id,sender_id,recipient_id,kind,payload,created_at)
+    values($1,$2,$3,$3,'status','{"action":"owner_update"}', $4)`, [id,draft.id,A,new Date(Date.UTC(2000,0,1,0,0,index))]);
+  await pool.query(`insert into pilot_messages(id,exchange_id,sender_id,recipient_id,kind,payload,created_at)
+    values($1,$2,$3,$3,'status','{"action":"owner_update"}','2000-01-02')`, [oldestB,draft.id,B]);
+  let wakes = await service().pendingAgentMessages();
+  assert.deepEqual(new Set(wakes.map(m=>m.id)), new Set([oldestA,oldestB]));
+  await service().markAgentDelivered(oldestB);
+  wakes = await service().pendingAgentMessages();
+  assert.equal(wakes.find(m=>m.recipient_id===A)?.id,oldestA,'Busy owner retains the oldest notification');
+  assert(!wakes.some(m=>m.id===oldestB),'Delivered owner wake is not repeated');
+  await service().markAgentDelivered(oldestA);
+  assert.equal((await service().pendingAgentMessages()).find(m=>m.recipient_id===A)?.id,backlog[1]);
+  await pool.query('delete from pilot_messages where id=any($1::uuid[])', [[...backlog,oldestB]]);
+  process.stdout.write('PASS: private durable agent actions, owner-only exact approval, stale/expired/replay denial, one draft per turn, normal payment guards, owner resume and fair per-owner notification delivery.\n');
 } finally { await pool.end(); }

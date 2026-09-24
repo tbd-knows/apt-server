@@ -14,6 +14,10 @@ product's required setup. Dynamic source discovery, owner-approved remote MCP
 capability inspection and owner-scoped OAuth connections are implemented with
 fixture validation. Exact owner-approved metadata tool execution is implemented
 for a verified discovery contract; generic financial tools are denied.
+Both owners can now approve exact private shipping-form versions for free
+validation/rate lookup through a reviewed seller service account. This does not
+dispatch a lookup or buy postage. Typed Shippo evidence validation is tested as
+an adapter component and is not yet wired into the fulfillment worker.
 Funding/execution of discovered fulfillment remains incomplete.
 See [service discovery and connections](agent-service-research.md). No founder
 provider credentials are configured, and no sandbox payment,

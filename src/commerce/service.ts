@@ -13,6 +13,7 @@ import { harnessContext } from './harness.js';
 import { CommerceResearch, researchInputSchema } from './research.js';
 import { listConnections } from './connections.js';
 import { listServiceActions,prepareServiceAction,serviceActionSchema } from './service-actions.js';
+import { proposeShippingData, decideShippingData, shippingDataView } from './shipping-consent.js';
 
 export class CommerceService {
   get research() { return new CommerceResearch(this); }
@@ -42,6 +43,7 @@ export class CommerceService {
       case when kind='label_refund' then result->>'refundStatus' else null end as "labelRefundStatus"
       from pilot_operations where exchange_id=$1 order by created_at`, [id])).rows;
     return { ...view, requestDigest: digest(e.request), privateInput: await this.repository.privateInput(e, actor),
+      shippingData: await shippingDataView(this,e,actor,this.now()),
       operations, deliveries: await this.deliveries(actor, id), research: await this.research.list(actor,id),connections:await listConnections(this,actor,id),serviceActions:await listServiceActions(this,actor,id),
       execution: { checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
         returnLabelAvailable: actor === e.buyerId && !!e.returnPlan && ['label_ready','in_transit','delivered'].includes(e.returnPlan.shipping),
@@ -88,6 +90,12 @@ export class CommerceService {
         await this.repository.event(sql, e, actor, 'agent_action_approved', { actionId: action.id, digest: action.digest, command: action.command });
       }
       switch (command.type) {
+        case 'propose_shipping_data':
+          await proposeShippingData(this,sql,e,actor,command.connectionId,now);
+          break;
+        case 'decide_shipping_data':
+          await decideShippingData(this,sql,e,actor,command.consentId,command.consentDigest,command.approve,command.acknowledgeServiceAccountAccess,now);
+          break;
         case 'decide_mcp_inspection': {
           mutable(e,now);
           const data = await this.repository.privateInput(e,actor,sql);
@@ -392,11 +400,15 @@ export class CommerceService {
     await this.repository.pool.query('update public.pilot_messages set read_at=coalesce(read_at,now()) where id=$1 and recipient_id=$2', [id, actor]);
   }
   async pendingAgentMessages() {
-    return (await this.repository.pool.query<{ id: string; recipient_id: string; exchange_id: string }>(`select m.id,m.recipient_id,m.exchange_id from pilot_messages m
+    // Each isolated agent can run one turn. A global oldest-ten queue lets a
+    // busy/unavailable founder's backlog starve the other founder indefinitely.
+    // Select each owner's oldest eligible wake independently, preserving order.
+    return (await this.repository.pool.query<{ id: string; recipient_id: string; exchange_id: string }>(`select distinct on (m.recipient_id) m.id,m.recipient_id,m.exchange_id from pilot_messages m
       join pilot_exchanges e on e.id=m.exchange_id where m.agent_delivered_at is null
-      and (m.sender_id<>m.recipient_id or m.kind='offer' or m.payload->>'action' in ('provider_update','owner_update','research_update','connection_update','service_action_update'))
+      and (m.sender_id<>m.recipient_id or m.kind='offer' or m.payload->>'action' in ('provider_update','owner_update','research_update','connection_update','service_action_update','shipping_data_update'))
       and (m.sender_id=m.recipient_id or m.a2a_received_at is not null)
-      and e.mode=$1 order by m.created_at limit 10`, [this.mode])).rows;
+      and m.recipient_id=any($2::uuid[]) and e.buyer_id=any($2::uuid[]) and e.seller_id=any($2::uuid[])
+      and e.mode=$1 order by m.recipient_id,m.created_at,m.id`, [this.mode,this.founders])).rows;
   }
   async deliveries(actor: string, exchangeId: string) {
     this.authorize(actor);
@@ -449,6 +461,7 @@ export class CommerceService {
         if (e.mode !== this.mode) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
         const [buyer, seller] = await Promise.all([this.repository.privateInput(e, e.buyerId), this.repository.privateInput(e, e.sellerId)]);
         return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller),
+          shippingData: await shippingDataView(this,e,actor,this.now()),
           deliveries: await this.deliveries(actor, e.id), research: await this.research.list(actor,e.id),connections:await listConnections(this,actor,e.id),serviceActions:(await listServiceActions(this,actor,e.id)).slice(-5) };
       }));
       const inbox = (await this.inbox(actor)).filter(m => !command.exchangeId || m.exchangeId === command.exchangeId).slice(0, 10)
@@ -471,7 +484,8 @@ export class CommerceService {
       if (e.mode !== this.mode) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
       if (command.action === 'prepare_action') {
         if (e.revision !== command.revision) conflict('The exchange changed. Read the current state before preparing an action.');
-        if (['message', 'decline', 'quote'].includes(command.command.type)) mutable(e, this.now());
+        if (['message', 'decline', 'quote', 'propose_shipping_data'].includes(command.command.type)) mutable(e, this.now());
+        if (command.command.type === 'propose_shipping_data') requireRole(e, actor, 'seller');
         if (command.command.type === 'decline') requireRole(e, actor, 'seller');
         if (command.command.type === 'checkout') requireRole(e, actor, 'buyer');
         const data = await this.repository.privateInput(e, actor, sql);
