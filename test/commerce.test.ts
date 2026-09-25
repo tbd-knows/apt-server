@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approve, approvalFor, createExchange, digest, draftRequestSchema, exchangeView, type Offer } from '../src/commerce/domain.js';
+import { approve, approvalFor, createExchange, digest, draftRequestSchema, exchangeView, offerSettlement, type Offer } from '../src/commerce/domain.js';
 import { CommerceService } from '../src/commerce/service.js';
 import { USER_A, USER_B } from './fixtures.js';
 
@@ -9,7 +9,7 @@ function offered() {
   const e = createExchange(USER_A, USER_B, 'test', request, now);
   e.stage = 'offered'; e.requestShared = true;
   e.offers = [{ version: 1, buyerTotal: 6500, currency: 'USD', expiresAt: '2026-09-23T12:00:00Z',
-    item: { description: 'Real shoes' }, quote: { originVersion: 1, destinationVersion: 2, carrier: 'FedEx', service: 'Ground', shippingAmount: 1500 } } as Offer];
+    taxAmount: 0, feeAmount: 0, item: { description: 'Real shoes', sellerAmount: 5000 }, quote: { originVersion: 1, destinationVersion: 2, carrier: 'FedEx', service: 'Ground', shippingAmount: 1500 } } as Offer];
   return e;
 }
 describe('commerce authority', () => {
@@ -28,6 +28,26 @@ describe('commerce authority', () => {
     expect(() => approve(e, USER_A, binding, now)).toThrow('already');
     e.approvals = []; e.offers[0]!.quote.destinationVersion++;
     expect(() => approve(e, USER_A, binding, now)).toThrow('does not match');
+  });
+  it('binds the postage payer and reimbursement to both approvals without rewriting old offers', () => {
+    const e = offered(), oldOffer = structuredClone(e.offers[0]!);
+    const oldBinding = approvalFor(e, USER_B);
+    expect(offerSettlement(oldOffer)).toEqual({ postageFunding: 'platform', postageReimbursement: 0, sellerTransferAmount: 5000 });
+    e.offers[0]!.postageFunding = 'seller_reimbursed';
+    expect(() => approve(e, USER_B, oldBinding, now)).toThrow('does not match');
+    for (const actor of [USER_A, USER_B]) {
+      const binding = approvalFor(e, actor);
+      expect(binding.settlement).toEqual({ postageFunding: 'seller_reimbursed', postageReimbursement: 1500, sellerTransferAmount: 6500 });
+      expect(() => approve(e, actor, { ...binding, settlement: { ...binding.settlement, sellerTransferAmount: 5000 } }, now)).toThrow('does not match');
+      approve(e, actor, binding, now);
+    }
+    expect(exchangeView(e, USER_A).settlement?.sellerTransferAmount).toBe(6500);
+    expect(oldOffer.postageFunding).toBeUndefined();
+    e.offers[0] = oldOffer;
+    expect(approvalFor(e, USER_B)).toEqual(oldBinding);
+    for (const patch of [{ buyerTotal: 6501 }, { taxAmount: -1 }, { feeAmount: 0.5 }, { postageFunding: 'unexpected' }]) {
+      expect(() => offerSettlement({ ...oldOffer, ...patch } as Offer)).toThrow();
+    }
   });
   it('does not expose seller drafts or unpublished requests to the buyer/counterparty', () => {
     const e = offered();

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHmac, randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import pg from 'pg';
-import { approve, approvalFor, createExchange, currentOffer, type Exchange, type Offer, type Operation, type OperationKind } from '../src/commerce/domain.js';
+import { approve, approvalFor, createExchange, currentOffer, type Exchange, type Offer, type Operation, type OperationKind, type PostageFunding } from '../src/commerce/domain.js';
 import { CommerceRepository, emptyPrivateInput } from '../src/commerce/repository.js';
 import { CommerceService } from '../src/commerce/service.js';
 import { CommerceWorker, type CommerceProviders } from '../src/commerce/worker.js';
@@ -20,13 +20,14 @@ const service = new CommerceService(repository, [A, B], 'test');
 const address = { name: 'Fixture', street1: '123 Fixture', street2: '', city: 'New York', state: 'NY', zip: '10001', country: 'US' as const, phone: '+12125550100' };
 const packing = { weightOz: 32, lengthIn: 14, widthIn: 10, heightIn: 6, packed: true as const, canPrint: true };
 const dropoff = { providerId: 'loc_fixture', name: 'Fixture', address: 'Fixture', hours: 'Fixture', checkedAt: new Date().toISOString(), mapUrl: 'https://example.test', carrier: 'FedEx', service: 'FEDEX_GROUND', artifact: 'pdf' as const };
-async function fixture(): Promise<Exchange> {
+async function fixture(postageFunding?: PostageFunding): Promise<Exchange> {
   const e = createExchange(A, B, 'test', { item: 'Shoes', style: 'Low', size: '10', sizingSystem: 'US men', condition: 'Used' }, new Date());
   e.requestShared = true; e.stage = 'offered';
   const item = { itemId: randomUUID(), description: 'Real fixture item', size: '10', sizingSystem: 'US men' as const, condition: 'Used', defects: '', photoIds: [randomUUID()], sellerAmount: 5000 };
   const offer: Offer = { version: 1, item, buyerTotal: 6500, currency: 'USD', taxAmount: 0, feeAmount: 0, subsidy: 'Fixture', taxTreatment: 'Fixture', shipBy: new Date(Date.now()+86400000).toISOString(), expiresAt: new Date(Date.now()+3600000).toISOString(),
     quote: { shipmentId: `shp_${e.id}`, rateId: 'rate_fixture', carrierAccountId: 'ca_fixture', carrier: 'FedEx', service: 'FEDEX_GROUND', shippingAmount: 1500, currency: 'USD', expiresAt: new Date(Date.now()+3600000).toISOString(), estimatedDays: 3,
       originVersion: 1, destinationVersion: 1, packingVersion: 1, artifact: 'pdf', dropoff } };
+  if (postageFunding) offer.postageFunding = postageFunding;
   e.item = item; e.offers = [offer];
   approve(e, A, approvalFor(e, A), new Date()); approve(e, B, approvalFor(e, B), new Date());
   await repository.transaction(async sql => {
@@ -44,6 +45,7 @@ async function queued(e: Exchange, kind: OperationKind, version = 1): Promise<Op
 }
 const payment = (e: Exchange): PaymentFact => ({ sessionId: `cs_${e.id}`, status: 'paid', amount: 6500, currency: 'usd', paymentIntentId: 'pi_fixture', chargeId: 'ch_fixture', transferId: 'tr_fixture', transferred: true, transferReversed: false, transferReversedAmount: 0, refunded: false, refundedAmount: 0, destinationPaymentId: 'py_fixture', checkoutUrl: null });
 const shipment = (id: string): Shipment => ({ id, mode: 'test', reference: null, rates: [], selected_rate: null, postage_label: null, tracker: null, to_address: {}, from_address: {}, parcel: {}, refund_status: 'not_submitted' });
+let payoutAmount: number | null = null;
 let activePayment: PaymentFact; let activeShipment: Shipment; let buys = 0; let refunds = 0; let checkoutCalls = 0;
 let uncertainBuy = false; let failRefund = false; let pendingRefund = false; let refundReads = 0; let omitReversal = false; let uncertainCreate = false; let creates = 0;
 const fake = {
@@ -55,7 +57,7 @@ const fake = {
       if (pendingRefund) return { id: 're_fixture', status: 'pending' };
       activePayment.refunded = true; activePayment.refundedAmount = 6500; activePayment.transferReversed = !omitReversal; activePayment.transferred = omitReversal;
       return { id: 're_fixture', status: 'succeeded' }; },
-    payout: async () => ({ id: null, status: 'unknown', amount: null }),
+    payout: async () => ({ id: payoutAmount === null ? null : 'po_fixture', status: payoutAmount === null ? 'unknown' : 'paid', amount: payoutAmount }),
   },
   shipping: { retrieve: async () => structuredClone(activeShipment), validateApproved: () => {}, validateInputs: () => ({}),
     config: { taxTreatment: 'Fixture', taxAmount: 0, subsidy: 'Fixture' },
@@ -69,6 +71,35 @@ const worker = () => new CommerceWorker(repository, service, fake);
 const command = async (e: Exchange, actor: string, input: unknown) => service.command(actor, e.id, randomUUID(), (await service.get(actor, e.id)).revision, input);
 
 try {
+  for (const funding of ['platform','seller_reimbursed'] as const) {
+    const settled=await fixture(funding); activePayment=payment(settled);
+    await mutate(settled,{payment:'paid',transfer:'transferred',stage:'fulfilling'});
+    const paidOp=await queued(settled,'checkout');
+    await pool.query("update pilot_operations set state='succeeded',provider_id=$2 where id=$1",[paidOp.id,activePayment.sessionId]);
+    const payoutOp=await queued(settled,'payout');
+    payoutAmount=funding==='seller_reimbursed'?5000:6500;
+    await worker().process(payoutOp);
+    assert.equal((await service.get(B,settled.id)).payout,'unknown');
+    assert.match((await service.get(B,settled.id)).problem ?? '',/postage settlement/);
+    await command(settled,B,{type:'retry_operation',operationId:payoutOp.id,reason:'Reconcile the exact persisted transfer contribution'});
+    payoutAmount=funding==='seller_reimbursed'?6500:5000;
+    await worker().process(payoutOp);
+    assert.equal((await service.get(B,settled.id)).payout,'paid');
+    assert.equal((await service.get(B,settled.id)).problem,null);
+  }
+  payoutAmount=null;
+  const sellerFunded=await fixture('seller_reimbursed');activePayment=payment(sellerFunded);
+  activeShipment=shipment(currentOffer(sellerFunded).quote.shipmentId);
+  await mutate(sellerFunded,{payment:'pending',stage:'awaiting_payment'});
+  const connectedCheckout=await queued(sellerFunded,'checkout');
+  const checkoutBefore=checkoutCalls;
+  await worker().process(connectedCheckout);
+  assert.equal(checkoutCalls,checkoutBefore);
+  assert.match((await service.get(B,sellerFunded.id)).problem ?? '',/connected shipping execution/);
+  await mutate(sellerFunded,{payment:'paid',shipping:'label_pending'});
+  const connectedLabel=await queued(sellerFunded,'label'),buysBefore=buys;
+  await worker().process(connectedLabel);assert.equal(buys,buysBefore);
+
   // Quote creation succeeded remotely before its response was lost. A founder
   // attaches the same provider object; bookkeeping revisions do not break recovery.
   const quoted = await fixture(); uncertainCreate = true;

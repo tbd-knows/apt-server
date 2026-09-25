@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { AppError } from '../errors.js';
-import { addressSchema, conflict, type Exchange, type Mode, type Offer, type PrivateInput, type Quote } from './domain.js';
+import { addressSchema, conflict, offerSettlement, type Exchange, type Mode, type Offer, type PrivateInput, type Quote } from './domain.js';
 
 export interface ProviderConfig {
   mode: Mode; stripeKey: string; stripeAccount: string; stripeWebhookSecret: string;
@@ -85,13 +85,14 @@ export class StripeProvider {
   }
   async checkout(exchange: Exchange, offer: Offer, operationId: string) {
     configured(this.config.publicUrl, this.config.taxTreatment, this.config.subsidy);
+    const settlement = offerSettlement(offer);
     const destination = await this.accountReady(exchange.sellerId);
     const response = await this.call('checkout/sessions', {
       mode: 'payment', 'payment_method_types[0]': 'card', 'payment_method_types[1]': 'link', client_reference_id: exchange.id,
       'line_items[0][price_data][currency]': 'usd', 'line_items[0][price_data][unit_amount]': String(offer.buyerTotal),
       'line_items[0][price_data][product_data][name]': `TBD approved offer ${offer.version}`, 'line_items[0][quantity]': '1',
       'payment_intent_data[transfer_data][destination]': destination,
-      'payment_intent_data[transfer_data][amount]': String(offer.item.sellerAmount),
+      'payment_intent_data[transfer_data][amount]': String(settlement.sellerTransferAmount),
       'payment_intent_data[metadata][exchange_id]': exchange.id,
       'metadata[exchange_id]': exchange.id, 'metadata[version]': String(offer.version), 'metadata[operation_id]': operationId,
       expires_at: String(Math.floor(Math.min(Date.parse(offer.expiresAt), Date.now() + 23 * 3_600_000) / 1000)),
@@ -105,6 +106,7 @@ export class StripeProvider {
     return this.paymentFact(raw, exchange, offer, operationId);
   }
   private async paymentFact(raw: unknown, exchange: Exchange, offer: Offer, operationId: string): Promise<PaymentFact> {
+    const settlement = offerSettlement(offer);
     const session = sessionSchema.parse(raw);
     if (session.livemode !== (this.config.mode === 'live') || session.client_reference_id !== exchange.id
       || session.metadata.exchange_id !== exchange.id || session.metadata.version !== String(offer.version)
@@ -120,7 +122,7 @@ export class StripeProvider {
     const transferData = object.parse(intent.transfer_data);
     if (intent.id !== intentId || intent.status !== 'succeeded' || intent.amount_received !== offer.buyerTotal || intent.currency !== 'usd'
       || intent.livemode !== (this.config.mode === 'live') || transferData.destination !== this.config.connectedAccounts[exchange.sellerId]
-      || transferData.amount !== offer.item.sellerAmount) conflict('Stripe settlement does not match the approved payment.');
+      || transferData.amount !== settlement.sellerTransferAmount) conflict('Stripe settlement does not match the approved payment.');
     const charge = object.parse(intent.latest_charge);
     if (charge.payment_intent !== intentId || charge.amount !== offer.buyerTotal || charge.currency !== 'usd'
       || charge.livemode !== (this.config.mode === 'live') || charge.paid !== true || charge.captured !== true) conflict('Stripe charge does not match the approved payment.');
@@ -130,13 +132,13 @@ export class StripeProvider {
     result.refundedAmount = z.number().int().min(0).max(offer.buyerTotal).parse(charge.amount_refunded);
     result.refunded = charge.refunded === true && result.refundedAmount === offer.buyerTotal;
     if (transfer) {
-      if (transfer.amount !== offer.item.sellerAmount || transfer.currency !== 'usd'
+      if (transfer.amount !== settlement.sellerTransferAmount || transfer.currency !== 'usd'
         || transfer.destination !== this.config.connectedAccounts[exchange.sellerId]
         || transfer.source_transaction !== charge.id || transfer.livemode !== (this.config.mode === 'live')) conflict('Stripe transfer does not match the seller settlement.');
       result.transferId = z.string().parse(transfer.id);
-      result.transferReversedAmount = z.number().int().min(0).max(offer.item.sellerAmount).parse(transfer.amount_reversed);
+      result.transferReversedAmount = z.number().int().min(0).max(settlement.sellerTransferAmount).parse(transfer.amount_reversed);
       result.transferred = transfer.reversed === false && transfer.amount_reversed === 0;
-      result.transferReversed = transfer.reversed === true && transfer.amount_reversed === offer.item.sellerAmount;
+      result.transferReversed = transfer.reversed === true && transfer.amount_reversed === settlement.sellerTransferAmount;
       result.destinationPaymentId = z.string().nullable().parse(transfer.destination_payment);
     }
     return result;

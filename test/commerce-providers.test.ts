@@ -11,7 +11,7 @@ import { USER_A, USER_B } from './fixtures.js';
 const config = { ...providerConfig({}, 'test'), stripeKey: 'sk_test_fixture', stripeAccount: 'acct_platform', connectedAccounts: { [USER_B]: 'acct_seller' },
   easyPostKey: 'fixture', easyPostUser: 'user_fixture', carrierAccount: 'ca_fixture', publicUrl: 'https://example.test', taxTreatment: 'Fixture', subsidy: 'Fixture' };
 const exchange = createExchange(USER_A, USER_B, 'test', { item: 'Shoes', style: 'Low', size: '10', sizingSystem: 'US men', condition: 'Used' }, new Date());
-const offer = { version: 1, buyerTotal: 6500, currency: 'USD', item: { sellerAmount: 5000 }, quote: { shipmentId: 'shp_fixture', rateId: 'rate_fixture', carrierAccountId: 'ca_fixture', carrier: 'FedEx', service: 'FEDEX_GROUND', shippingAmount: 1500 }, expiresAt: new Date(Date.now() + 3600000).toISOString() } as Offer;
+const offer = { version: 1, buyerTotal: 6500, taxAmount: 0, feeAmount: 0, currency: 'USD', item: { sellerAmount: 5000 }, quote: { shipmentId: 'shp_fixture', rateId: 'rate_fixture', carrierAccountId: 'ca_fixture', carrier: 'FedEx', service: 'FEDEX_GROUND', shippingAmount: 1500 }, expiresAt: new Date(Date.now() + 3600000).toISOString() } as Offer;
 const session = () => ({ id: 'cs_fixture', object: 'checkout.session', livemode: false, client_reference_id: exchange.id, amount_total: 6500, currency: 'usd',
   payment_status: 'paid', status: 'complete', payment_intent: 'pi_fixture', url: null, metadata: { exchange_id: exchange.id, version: '1', operation_id: 'op_fixture' } });
 const intent = () => ({ id: 'pi_fixture', status: 'succeeded', amount_received: 6500, currency: 'usd', livemode: false,
@@ -53,6 +53,26 @@ describe('provider contracts', () => {
     expect(fields.get('payment_intent_data[transfer_data][amount]')).toBe('5000');
     expect(fields.get('line_items[0][price_data][unit_amount]')).toBe('6500');
     expect([...fields.keys()].join()).not.toContain('address');
+  });
+  it('transfers and reverses the item plus exact seller postage reimbursement', async () => {
+    const reimbursed = { ...offer, postageFunding: 'seller_reimbursed' as const };
+    const fetcher = fetchObjects({ id: 'acct_platform' }, { charges_enabled: true, capabilities: { transfers: 'active' } }, { ...session(), status: 'open', payment_status: 'unpaid' });
+    await new StripeProvider(config, fetcher).checkout(exchange, reimbursed, 'op_fixture');
+    const fields = new URLSearchParams(String(fetcher.mock.calls[2]![1]!.body));
+    expect(fields.get('payment_intent_data[transfer_data][amount]')).toBe('6500');
+    expect(fields.get('line_items[0][price_data][unit_amount]')).toBe('6500');
+    await expect(new StripeProvider(config, fetchObjects(session(), intent())).retrieve('cs_fixture', exchange, reimbursed, 'op_fixture')).rejects.toThrow('settlement');
+    const paid = intent(); paid.transfer_data.amount = 6500; paid.latest_charge.transfer.amount = 6500;
+    expect(await new StripeProvider(config, fetchObjects(session(), paid)).retrieve('cs_fixture', exchange, reimbursed, 'op_fixture')).toMatchObject({ transferred: true });
+    paid.latest_charge.refunded = true; paid.latest_charge.amount_refunded = 6500;
+    paid.latest_charge.transfer.reversed = true; paid.latest_charge.transfer.amount_reversed = 5000;
+    expect(await new StripeProvider(config, fetchObjects(session(), paid)).retrieve('cs_fixture', exchange, reimbursed, 'op_fixture')).toMatchObject({ refunded: true, transferred: false, transferReversed: false });
+    paid.latest_charge.transfer.amount_reversed = 6500;
+    expect(await new StripeProvider(config, fetchObjects(session(), paid)).retrieve('cs_fixture', exchange, reimbursed, 'op_fixture')).toMatchObject({ refunded: true, transferReversed: true });
+    await expect(new StripeProvider(config, fetchObjects(session(), paid)).retrieve('cs_fixture', exchange, offer, 'op_fixture')).rejects.toThrow('settlement');
+    const malformed = fetchObjects();
+    await expect(new StripeProvider(config, malformed).checkout(exchange, { ...reimbursed, buyerTotal: 5000 }, 'op_fixture')).rejects.toThrow('settlement');
+    expect(malformed).not.toHaveBeenCalled();
   });
   it('attributes only the matching automatic bank payout, using the connected account', async () => {
     const fact = await new StripeProvider(config, fetchObjects(session(), intent())).retrieve('cs_fixture', exchange, offer, 'op_fixture');

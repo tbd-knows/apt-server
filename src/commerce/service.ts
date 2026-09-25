@@ -6,7 +6,7 @@ import {
   approve, approvalFor, conflict, createExchange, currentOffer, digest, draftRequestSchema,
   exchangeView, humanCommandSchema, invalidate, itemSchema, mutable, requireRole,
   reconciledStage, resolutionBinding, returnBinding, stableJson, type Exchange, type Mode, type Quote,
-  preparedCommandSchema,
+  preparedCommandSchema, offerSettlement,
 } from './domain.js';
 import { CommerceRepository, emptyPrivateInput } from './repository.js';
 import { harnessContext } from './harness.js';
@@ -196,6 +196,9 @@ export class CommerceService {
           break;
         }
         case 'approve': {
+          if (currentOffer(e).postageFunding === 'seller_reimbursed' && command.acknowledgeSellerPostageReimbursement !== true) {
+            conflict('Review seller-paid postage and Stripe reimbursement in the updated app before approving.');
+          }
           approve(e, actor, command.binding, now);
           const binding = approvalFor(e, actor);
           await sql.query(`insert into public.pilot_approvals(id,exchange_id,actor_id,version,binding) values($1,$2,$3,$4,$5)`,
@@ -365,7 +368,7 @@ export class CommerceService {
   }
 
   /** Called only with a provider-adapter quote, never model/client arguments. */
-  async publishQuote(id: string, expectedRevision: number, quote: Quote, economics: { taxAmount: number; feeAmount: number; subsidy: string; taxTreatment: string }) {
+  async publishQuote(id: string, expectedRevision: number, quote: Quote, economics: { postageFunding: 'platform' | 'seller_reimbursed'; taxAmount: number; feeAmount: number; subsidy: string; taxTreatment: string }) {
     await this.repository.transaction(async sql => {
       const row = await sql.query<{ data: Exchange }>('select data from public.pilot_exchanges where id=$1 for update', [id]);
       const e = row.rows[0]?.data;
@@ -382,6 +385,7 @@ export class CommerceService {
         buyerTotal: amounts.reduce((a, b) => a + b, 0), currency: 'USD' as const, expiresAt: quote.expiresAt,
         shipBy: new Date(this.now().getTime() + 3 * 86_400_000).toISOString(),
       };
+      offerSettlement(offer);
       e.offers.push(offer); e.approvals = []; e.stage = 'offered';
       const oldQuotes = await sql.query("select id from pilot_operations where exchange_id=$1 and kind='quote'", [e.id]);
       for (const row of oldQuotes.rows) if (e.operationIssues) delete e.operationIssues[row.id];

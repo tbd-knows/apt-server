@@ -24,7 +24,10 @@ Authenticated production schema compatibility remains unverified. Rate selection
 paid labels and purchased-artifact integration into the fulfillment worker remain
 incomplete. Hosted-service rates are explicitly live-provider evidence even when
 the surrounding commerce exchange is in test mode.
-Funding/execution of discovered fulfillment remains incomplete.
+The founder selected seller-paid postage with Stripe reimbursement. Saved offer
+funding, exact approval disclosures, Stripe transfer/reversal and payout amounts
+now support it. Execution of discovered fulfillment remains incomplete; the
+legacy platform-funded adapter refuses seller-funded checkout and postage.
 See [service discovery and connections](agent-service-research.md). No founder
 provider credentials are configured, and no sandbox payment,
 real postage purchase, live migration or live transaction has been verified.
@@ -77,10 +80,27 @@ Engineering defaults: one physical item, domestic US, USD, card payments.
 Founders must confirm location, eligibility and tax treatment before live mode.
 
 - [Stripe destination charges](https://docs.stripe.com/connect/destination-charges)
-  with hosted onboarding and Checkout. Seller receives the agreed item amount;
-  shipping allocation stays with the platform. No commission; any processing
-  subsidy is explicit. Destination charges are not escrow. Transfer and payout
-  remain distinct facts.
+  with hosted onboarding and Checkout. For the target connected-service flow,
+  the seller pays postage and receives item price plus the approved postage
+  reimbursement through Stripe. The buyer pays item + postage + disclosed
+  taxes/fees. No commission; processing subsidy remains explicit. The shipping
+  account needs available funds because a Stripe transfer is not immediate bank
+  payout. Destination charges are not escrow.
+  `offer.postageFunding` persists `seller_reimbursed` or `platform`; missing
+  fields on historical offers retain their original platform-funded economics.
+  Both human approval bindings include the new settlement breakdown, and their
+  digest covers all offer fields. A changed payer or amount requires a new offer
+  and both approvals. Seller-funded approvals also require an explicit API
+  acknowledgement from the updated mobile review; older clients cannot silently
+  approve funding terms they do not display. Canonical payment, transfer reversal and attributable bank
+  payout must match item plus reimbursement for seller-funded offers. A full
+  buyer refund reverses that full transfer; any carrier postage refund is a
+  separate seller-account operation. Unexpected adjustments require a separate
+  approved remedy, never an automatic extra charge.
+  The optional existing EasyPost path still pays postage from the platform and
+  explicitly publishes platform-funded offers. Its worker rejects seller-funded
+  offers before creating Checkout or buying postage, so it cannot double-fund a
+  shipment while connected-service execution is being integrated.
 - [EasyPost shipments](https://docs.easypost.com/docs/shipments) for verified
   addresses, actual package rates, paid labels and tracking. Reconcile a known
   shipment after an uncertain buy; do not create another shipment to retry it.

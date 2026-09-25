@@ -20,7 +20,9 @@ const request = { item: 'White Nike Air Force 1', style: 'Low', size: '10', sizi
 const privateBudget = 937_123;
 const command = async (actor: string, id: string, input: unknown) => {
   const view = await service().get(actor, id);
-  return service().command(actor, id, randomUUID(), view.revision, input);
+  const body = input as Record<string,unknown>;
+  return service().command(actor, id, randomUUID(), view.revision, { ...body,
+    ...(body.type === 'approve' && view.offer?.postageFunding === 'seller_reimbursed' ? {acknowledgeSellerPostageReimbursement:true} : {}) });
 };
 try {
   const key = randomUUID();
@@ -55,9 +57,26 @@ try {
   const quote: Quote = { shipmentId: 'shp_fixture', rateId: 'rate_fixture', carrierAccountId: 'ca_fixture', carrier: 'FedEx', service: 'Ground', shippingAmount: 1500,
     currency: 'USD', expiresAt: new Date(now.getTime() + 3_600_000).toISOString(), estimatedDays: 3, originVersion: 1, destinationVersion: 1, packingVersion: 1, artifact: 'pdf',
     dropoff: { providerId: 'fixture', name: 'Fixture only', address: 'Fixture', hours: 'Fixture', mapUrl: 'https://example.com', checkedAt: now.toISOString(), carrier: 'FedEx', service: 'Ground', artifact: 'pdf' } };
-  await service().publishQuote(draft.id, pending.revision, quote, { taxAmount: 0, feeAmount: 0, subsidy: 'Founder absorbs processing fees (test)', taxTreatment: 'Test fixture only' });
+  await service().publishQuote(draft.id, pending.revision, quote, { postageFunding: 'platform', taxAmount: 0, feeAmount: 0, subsidy: 'Founder absorbs processing fees (test)', taxTreatment: 'Test fixture only' });
   let buyer = await service().get(A, draft.id);
   assert.equal(buyer.offer?.buyerTotal, 6500);
+  assert.deepEqual(buyer.settlement, {postageFunding:'platform',postageReimbursement:0,sellerTransferAmount:5000});
+  const originalApproval = buyer.approval;
+  await command(A, draft.id, { type: 'approve', binding: originalApproval });
+  const originalSellerApproval = (await service().get(B,draft.id)).approval;
+  await command(B,draft.id,{type:'approve',binding:originalSellerApproval});
+  assert.equal((await service().get(A,draft.id)).approvalCount,2);
+  // Trusted adapter fixture switches the funding terms before checkout. This
+  // must publish a new version and invalidate BOTH original human approvals.
+  await service().publishQuote(draft.id, (await service().get(A,draft.id)).revision, quote,
+    {postageFunding:'seller_reimbursed',taxAmount:0,feeAmount:0,subsidy:'Fixture fees',taxTreatment:'Fixture taxes'});
+  buyer = await service().get(A,draft.id);
+  assert.equal(buyer.offer?.version,2); assert.equal(buyer.approvalCount,0);
+  assert.equal(buyer.settlement?.sellerTransferAmount,6500);
+  assert.equal(buyer.approval?.settlement?.postageReimbursement,1500);
+  await assert.rejects(service().command(A,draft.id,randomUUID(),buyer.revision,{type:'approve',binding:buyer.approval}),/updated app/);
+  await assert.rejects(command(A,draft.id,{type:'approve',binding:originalApproval}), /does not match/);
+  await assert.rejects(command(B,draft.id,{type:'approve',binding:originalSellerApproval}), /does not match/);
   await assert.rejects(command(A, draft.id, { type: 'approve', binding: { ...buyer.approval, amount: 1 } }), /does not match/);
   await command(A, draft.id, { type: 'approve', binding: buyer.approval });
   await assert.rejects(command(A, draft.id, { type: 'approve', binding: buyer.approval }), /already/);

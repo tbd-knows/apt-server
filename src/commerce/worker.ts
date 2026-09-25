@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AppError } from '../errors.js';
-import { conflict, currentOffer, digest, reconciledStage, stableJson, type Exchange, type Operation, type Quote } from './domain.js';
+import { conflict, currentOffer, digest, offerSettlement, reconciledStage, stableJson, type Exchange, type Operation, type Offer, type Quote } from './domain.js';
 import { CommerceRepository } from './repository.js';
 import { CommerceService } from './service.js';
 import { decimalMinor, EasyPostProvider, ProviderFailure, StripeProvider, type PaymentFact, type Shipment } from './providers.js';
@@ -140,8 +140,15 @@ export class CommerceWorker {
       expiresAt: new Date(Date.now() + 2 * 3_600_000).toISOString(), estimatedDays: rate.delivery_days ?? null,
       originVersion: seller.addressVersion, destinationVersion: buyer.addressVersion, packingVersion: seller.packingVersion,
       artifact: 'pdf', dropoff };
-    await this.service.publishQuote(e.id, e.revision, quote, { taxAmount: config.taxAmount, feeAmount: 0, taxTreatment: config.taxTreatment, subsidy: config.subsidy });
+    await this.service.publishQuote(e.id, e.revision, quote, { postageFunding: 'platform', taxAmount: config.taxAmount, feeAmount: 0, taxTreatment: config.taxTreatment, subsidy: config.subsidy });
     await this.done(op, shipment.id, { offerVersion: e.offers.length + 1 });
+  }
+  private requirePlatformShipping(offer: Offer) {
+    // The existing EasyPost adapter charges the PLATFORM. Never reimburse a
+    // seller and then silently use that adapter to pay the same postage again.
+    if (offerSettlement(offer).postageFunding !== 'platform') {
+      throw new AppError('PROVIDER_NOT_READY', 'Seller-funded postage requires the connected shipping execution path before checkout or fulfillment.');
+    }
   }
   private async checkout(op: Operation, e: Exchange) {
     if (op.result?.cancelledBeforeCreation === true) return;
@@ -155,6 +162,7 @@ export class CommerceWorker {
         await this.cancelUnpaid(e); await this.done(op, null, { cancelledBeforeCreation: true }); return;
       }
       if (e.approvals.length !== 2 || e.approvals.some(a => a.digest !== digest(offer))) conflict('Checkout approvals are invalid.');
+      this.requirePlatformShipping(offer);
       const shipment = await this.providers.shipping.retrieve(offer.quote.shipmentId);
       this.providers.shipping.validateApproved(shipment, offer.quote);
       fact = await this.providers.stripe.checkout(e, offer, op.id);
@@ -206,6 +214,7 @@ export class CommerceWorker {
   private async label(op: Operation, e: Exchange) {
     const offer = e.offers.find(o => o.version === op.version);
     if (!offer) conflict('Missing offer.');
+    this.requirePlatformShipping(offer);
     let shipment = await this.providers.shipping.retrieve(offer.quote.shipmentId);
     this.providers.shipping.validateApproved(shipment, offer.quote);
     if (!shipment.postage_label) {
@@ -226,6 +235,7 @@ export class CommerceWorker {
       const row = await sql.query<{ data: Exchange }>('select data from pilot_exchanges where id=$1 for update', [id]);
       const e = row.rows[0]!.data;
       const before = stableJson(e);
+      this.requirePlatformShipping(currentOffer(e));
       this.providers.shipping.validateApproved(shipment, currentOffer(e).quote);
       if (!shipment.postage_label) return;
       if (e.payment === 'refunded' && !e.sellerDroppedAt && !e.carrierAcceptedAt && !['in_transit','delivered','exception'].includes(e.shipping)) {
@@ -312,6 +322,7 @@ export class CommerceWorker {
   }
   private async labelRefund(op: Operation, e: Exchange) {
     if (op.result?.costAccepted === true) return;
+    this.requirePlatformShipping(currentOffer(e));
     const id = currentOffer(e).quote.shipmentId;
     const shipment = await this.providers.shipping.retrieve(id);
     let status = shipment.refund_status;
@@ -332,7 +343,7 @@ export class CommerceWorker {
     if (!payment.providerId) throw new ProviderFailure(true, 'Payment identity must reconcile before payout.');
     const fact = await this.providers.stripe.retrieve(payment.providerId, e, currentOffer(e), payment.id);
     const payout = await this.providers.stripe.payout(e.sellerId, fact, op.providerId);
-    if (payout.amount !== null && payout.amount !== currentOffer(e).item.sellerAmount) conflict('Payout contribution does not match the agreed seller amount.');
+    if (payout.amount !== null && payout.amount !== offerSettlement(currentOffer(e)).sellerTransferAmount) conflict('Payout contribution does not match the approved item and postage settlement.');
     await this.repository.transaction(async sql => {
       const current = await this.repository.get(e.id, e.sellerId, sql, true);
       if (payout.status !== 'unknown' && current.payout !== payout.status) {

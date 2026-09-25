@@ -91,7 +91,7 @@ never authorize live postage. This component's fixture coverage of both modes is
 not a claim that hosted Shippo supports sandbox calls.
 
 Remaining integration must resolve the actual authenticated meta-tool schemas,
-record which account funds postage, bind separate spending permission to provider-confirmed Stripe payment,
+bind the approved seller-paid/Stripe-reimbursed funding to a verified service account and provider-confirmed Stripe payment,
 persist operation identity before dispatch and reconcile ambiguous outcomes.
 The metadata field used here is a correlation identifier, **not** provider
 idempotency. Do not replay a purchase because parsing or transport failed. A rate
@@ -329,7 +329,7 @@ forced RLS and unchanged financial/shipping state. No real service account or
 financial operation has been executed.
 
 Still required: integrate rate selection into exact offers and implement paid
-label execution contracts; bind exact costs and who funds postage to both parties' offer approvals; persist
+label execution contracts using the persisted seller-reimbursement settlement and both exact approvals; persist
 canonical provider evidence, reconcile uncertain purchases, and verify artifacts,
 compatible drop-off, no-printer support, tracking and resolutions. Shippo's hosted
 MCP currently documents live-account purchases and no test mode, so a simulated
@@ -431,3 +431,29 @@ account owner and live mode and report active=true. Only carrier token, rate/acc
 references and explicit live-provider mode are retained; account parameters and
 raw replies are discarded. An inactive/mismatched account remains unresolved.
 A carrier identity does not itself prove printing or drop-off compatibility.
+
+
+## Approved seller-paid postage funding
+
+The founder chose seller-paid postage reimbursed through Stripe. The server now
+persists this policy on a versioned offer, includes its derived reimbursement and
+total seller transfer in both approval bindings, and uses the same integer-money
+calculation for Checkout, canonical transfer/reversal verification and attributable
+payout reconciliation. For a $50 item and $15 postage, the buyer pays $65 before
+any disclosed taxes/fees and Stripe transfers $65 to the seller, of which $15
+reimburses postage. The seller shipping service charges the seller separately;
+Stripe bank payout need not have arrived. No extra commission is introduced.
+
+Historical offers without the new field remain platform-funded; published
+platform-adapter offers explicitly record that policy. A funding change creates
+a new version and invalidates approvals. Full refund/reversal verification
+requires reversing the reimbursement too, while a carrier postage refund remains
+separate. Mobile shows the exact breakdown and these consequences to either role.
+
+This is financial-contract integration, not completed connected fulfillment.
+There is no exposed model/client action that can invent a shipping offer or set
+its funding. The legacy platform-account worker rejects seller-funded Checkout
+creation and label operations rather than paying the same postage twice.
+Remaining work includes publishing a verified connected offer, dispatching its
+paid label action, reconciling it, and integrating artifact/tracking/refund/return
+operations. A selected rate alone does not authorize any of those actions.

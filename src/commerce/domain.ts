@@ -41,15 +41,21 @@ export interface Quote {
   originVersion: number; destinationVersion: number; packingVersion: number;
   artifact: 'pdf' | 'label_qr'; dropoff: Dropoff;
 }
+export type PostageFunding = 'platform' | 'seller_reimbursed';
+export interface Settlement {
+  postageFunding: PostageFunding; postageReimbursement: number; sellerTransferAmount: number;
+}
 export interface Offer {
   version: number; item: ItemDetails; quote: Quote; taxAmount: number; feeAmount: number;
   buyerTotal: number; currency: 'USD'; expiresAt: string; shipBy: string;
   subsidy: string; taxTreatment: string;
+  /** Missing only on historical platform-funded offers. Never reinterpret them. */
+  postageFunding?: PostageFunding;
 }
 export interface ApprovalBinding {
   actorId: string; operation: 'buy' | 'sell_and_postage'; exchangeId: string; version: number;
   amount: number; currency: 'USD'; destinationVersion: number; originVersion: number;
-  service: string; expiresAt: string; digest: string;
+  service: string; expiresAt: string; digest: string; settlement?: Settlement;
 }
 export interface Exchange {
   id: string; buyerId: string; sellerId: string; mode: Mode;
@@ -144,6 +150,18 @@ export function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 export function digest(value: unknown) { return createHash('sha256').update(stableJson(value)).digest('hex'); }
+/** One calculation for approvals, Checkout, transfer reversal and bank payout.
+ * This policy is persisted on the offer, never read from a mutable global setting. */
+export function offerSettlement(offer: Offer): Settlement {
+  const postageFunding = offer.postageFunding === undefined ? 'platform' : offer.postageFunding;
+  if (!['platform', 'seller_reimbursed'].includes(postageFunding)) conflict('Unsupported postage funding terms.');
+  const amounts = [offer.item.sellerAmount, offer.quote.shippingAmount, offer.taxAmount, offer.feeAmount];
+  if (offer.currency !== 'USD' || amounts.some(amount => !Number.isSafeInteger(amount) || amount < 0)
+    || !Number.isSafeInteger(offer.buyerTotal) || offer.buyerTotal < 50 || offer.buyerTotal > 1_000_000
+    || amounts.reduce((sum, amount) => sum + amount, 0) !== offer.buyerTotal) conflict('Invalid approved settlement amounts.');
+  const postageReimbursement = postageFunding === 'seller_reimbursed' ? offer.quote.shippingAmount : 0;
+  return { postageFunding, postageReimbursement, sellerTransferAmount: offer.item.sellerAmount + postageReimbursement };
+}
 export function approvalFor(exchange: Exchange, userId: string): ApprovalBinding {
   requireParticipant(exchange, userId);
   const offer = currentOffer(exchange);
@@ -154,6 +172,7 @@ export function approvalFor(exchange: Exchange, userId: string): ApprovalBinding
     currency: offer.currency, destinationVersion: offer.quote.destinationVersion,
     originVersion: offer.quote.originVersion, service: `${offer.quote.carrier}/${offer.quote.service}`,
     expiresAt: offer.expiresAt, digest: digest(offer),
+    ...(offer.postageFunding === undefined ? {} : { settlement: offerSettlement(offer) }),
   };
 }
 export function approve(exchange: Exchange, actorId: string, raw: unknown, now: Date) {
@@ -192,6 +211,7 @@ export function exchangeView(exchange: Exchange, userId: string) {
     approval: exchange.stage === 'offered' ? approvalFor(exchange, userId) : null,
     approvedByMe: exchange.approvals.some(a => a.actorId === userId),
     approvalCount: exchange.approvals.length, revision: exchange.revision,
+    settlement: exchange.stage === 'preparing_offer' || !exchange.offers.length ? null : offerSettlement(currentOffer(exchange)),
     payment: exchange.payment, shipping: exchange.shipping, transfer: exchange.transfer, payout: exchange.payout,
     sellerDroppedAt: exchange.sellerDroppedAt, buyerReceivedAt: exchange.buyerReceivedAt,
     carrierAcceptedAt: exchange.carrierAcceptedAt, trackingUpdatedAt: exchange.trackingUpdatedAt,
@@ -211,7 +231,7 @@ export const humanCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('share_item'), item: itemSchema }).strict(),
   z.object({ type: z.literal('address'), address: addressSchema }).strict(),
   z.object({ type: z.literal('packing'), packing: packingSchema }).strict(),
-  z.object({ type: z.literal('approve'), binding: z.unknown() }).strict(),
+  z.object({ type: z.literal('approve'), binding: z.unknown(), acknowledgeSellerPostageReimbursement: z.literal(true).optional() }).strict(),
   z.object({ type: z.literal('checkout') }).strict(),
   z.object({ type: z.literal('quote') }).strict(),
   z.object({ type: z.literal('cancel'), reason: shortText }).strict(),
