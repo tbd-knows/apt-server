@@ -2,7 +2,7 @@ import type { Exchange, PrivateInput } from './domain.js';
 
 /** Deterministic prerequisites for the model's next decision. A plan or
  * recommendation cannot change these facts or establish provider outcomes. */
-export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, buyer: PrivateInput, seller: PrivateInput) {
+export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, buyer: PrivateInput, seller: PrivateInput, now=new Date()) {
   const buyerRole = actor === e.buyerId;
   const missing: string[] = [];
   if (!e.requestShared) missing.push('owner_share_approval');
@@ -11,7 +11,12 @@ export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, b
     if (!mine.address) missing.push('owner_private_address_form');
     if (!(buyerRole ? seller.address : buyer.address)) missing.push('counterparty_private_address');
     if (!seller.packing) missing.push(buyerRole ? 'seller_packing' : 'owner_packing');
-    if (seller.packing && !seller.packing.canPrint) missing.push('supported_no_printer_fulfillment');
+    const quote=e.offers.at(-1)?.quote;
+    const printingCodeSupported=quote?.artifact==='label_qr' && quote.dropoff.artifact==='label_qr'
+      && quote.dropoff.carrier===quote.carrier && quote.dropoff.service===quote.service
+      && Date.parse(quote.expiresAt)>now.getTime() && quote.originVersion===seller.addressVersion
+      && quote.destinationVersion===buyer.addressVersion && quote.packingVersion===seller.packingVersion;
+    if (seller.packing && !seller.packing.canPrint && !printingCodeSupported) missing.push('supported_no_printer_fulfillment');
     if (!e.offers.length || e.stage === 'preparing_offer') missing.push('verified_fulfillment_option');
     if (e.stage === 'offered' && !e.approvals.some(a=>a.actorId===actor)) missing.push('owner_exact_offer_approval');
     if (e.stage === 'offered' && e.approvals.length < 2) missing.push('both_exact_offer_approvals');

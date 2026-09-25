@@ -12,6 +12,7 @@ import { shippingRatesResultView } from './shipping-rates.js';
 export const serviceActionSchema=z.object({action:z.literal('prepare_service_action'),exchangeId:z.uuid(),connectionId:z.uuid(),
   revision:z.number().int().positive(),tool:z.string().min(1).max(128),arguments:z.record(z.string(),z.unknown()),
   explanation:z.string().trim().min(1).max(1000)}).strict();
+export const serviceHistorySchema=z.object({action:z.literal('service_history'),exchangeId:z.uuid(),beforeActionId:z.uuid().optional()}).strict();
 export interface ServiceActionRow {
   id:string;exchange_id:string;owner_id:string;connection_id:string;mode:string;turn_id:string;revision:number;generation:string;
   endpoint:string;invocation:ServiceInvocation;explanation:string;digest:string;call_digest:string;state:string;
@@ -38,7 +39,30 @@ export async function listServiceActions(commerce:CommerceService,actor:string,e
   commerce.authorize(actor);
   const e=await commerce.repository.get(exchangeId,actor);exchangeView(e,actor);
   if(e.mode!==commerce.mode) throw new AppError('NOT_FOUND','Exchange not found.');
-  return (await commerce.repository.pool.query<ServiceActionRow>('select * from pilot_service_actions where exchange_id=$1 and owner_id=$2 and mode=$3 order by created_at',[exchangeId,actor,commerce.mode])).rows.map(serviceActionView);
+  return (await commerce.repository.pool.query<ServiceActionRow>('select * from pilot_service_actions where exchange_id=$1 and owner_id=$2 and mode=$3 order by created_at,id',[exchangeId,actor,commerce.mode])).rows.map(serviceActionView);
+}
+/** Resume older private receipts without expanding every model turn's context.
+ * A cursor is an owned receipt reference, never a caller-supplied timestamp. */
+export async function serviceActionHistory(commerce:CommerceService,actor:string,raw:unknown) {
+  commerce.authorize(actor);const input=serviceHistorySchema.parse(raw);
+  const e=await commerce.repository.get(input.exchangeId,actor);exchangeView(e,actor);
+  if(e.mode!==commerce.mode) throw new AppError('NOT_FOUND','Exchange not found.');
+  const values:unknown[]=[e.id,actor,commerce.mode];
+  let cursor='';
+  if(input.beforeActionId) {
+    const owned=(await commerce.repository.pool.query<ServiceActionRow>(`select * from pilot_service_actions
+      where id=$1 and exchange_id=$2 and owner_id=$3 and mode=$4`,[input.beforeActionId,e.id,actor,commerce.mode])).rows[0];
+    if(!owned) throw new AppError('NOT_FOUND','Service action not found.');
+    // Preserve Postgres microseconds by comparing inside the database rather
+    // than round-tripping created_at through JavaScript Date milliseconds.
+    values.push(owned.id);
+    cursor='and (created_at,id)<(select created_at,id from pilot_service_actions where id=$4)';
+  }
+  const rows=(await commerce.repository.pool.query<ServiceActionRow>(`select * from pilot_service_actions
+    where exchange_id=$1 and owner_id=$2 and mode=$3 ${cursor} order by created_at desc,id desc limit 6`,values)).rows;
+  const page=rows.slice(0,5);
+  return {exchangeId:e.id,actions:page.map(serviceActionView),nextBeforeActionId:rows.length>5?page.at(-1)!.id:null,
+    authority:'untrusted_service_result' as const};
 }
 export async function prepareServiceAction(commerce:CommerceService,actor:string,turnId:string,raw:unknown) {
   commerce.authorize(actor);const input=serviceActionSchema.parse(raw);

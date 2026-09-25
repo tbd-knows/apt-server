@@ -399,3 +399,19 @@ can be shown directly in a white, uncropped view on the phone and is removed fro
 view when the app backgrounds or the exchange changes. PDF cache files use unique
 names and are deleted after sharing. No signed provider URL is sent to the device.
 Physical scanning and real provider artifact compatibility remain unverified.
+
+
+## Resuming older service receipts
+
+Agent state keeps five recent private actions. `serviceActionHistoryCursor`
+identifies the oldest visible receipt when earlier ones exist. The read-only
+`service_history` tool action takes exchangeId and optional beforeActionId,
+returns five receipts newest-first, and provides nextBeforeActionId. It checks
+owner, exchange and mode on both the page and cursor; it cannot read peer receipts.
+All pages use the same private-data-minimized projections as current state.
+
+Ordering compares PostgreSQL (created_at,id) directly, preserving microseconds
+and stable paging when timestamps tie. This lets an agent recover an earlier
+operation description or pending shipment without inventing a reference or
+repeating an external operation. Real-database tests cover complete traversal,
+timestamp ties, foreign/unknown cursors, mode isolation and state continuation.

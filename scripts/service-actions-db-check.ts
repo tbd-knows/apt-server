@@ -107,6 +107,29 @@ try {
   await connections.disconnect(A,connection);release();
   assert.equal((await pending).state,'failed');assert.equal(calls,2);waitOnList=undefined;onList=undefined;
   await assert.rejects(prepare('Disconnected'),/Connect and inspect/);
+  // Force timestamp ties to exercise stable cursor ordering without dropping
+  // rows due to JS millisecond truncation or leaking another owner's cursor.
+  await pool.query("update pilot_service_actions set created_at='2026-09-24T10:00:00.123456Z' where exchange_id=$1",[e.id]);
+  const historyContext={userId:A,runId:randomUUID(),requestMessageId:randomUUID()};
+  type Page={actions:{id:string}[];nextBeforeActionId:string|null};
+  let page=await commerce.invoke(historyContext,{action:'service_history',exchangeId:e.id}) as Page;
+  assert.equal(page.actions.length,5);assert(page.nextBeforeActionId);
+  const seen:string[]=[];
+  while(true) {
+    seen.push(...page.actions.map(row=>row.id));
+    assert(!JSON.stringify(page).includes('ACCESS_CANARY'));assert(!JSON.stringify(page).includes('937123'));
+    if(!page.nextBeforeActionId) break;
+    page=await commerce.invoke(historyContext,{action:'service_history',exchangeId:e.id,beforeActionId:page.nextBeforeActionId}) as Page;
+  }
+  const all=await listServiceActions(commerce,A,e.id);
+  assert.deepEqual(seen,[...all].reverse().map(row=>row.id));assert.equal(new Set(seen).size,all.length);
+  assert.deepEqual((await commerce.invoke({...historyContext,userId:B},{action:'service_history',exchangeId:e.id}) as Page).actions,[]);
+  await assert.rejects(commerce.invoke({...historyContext,userId:B},{action:'service_history',exchangeId:e.id,beforeActionId:first.id}),/not found/);
+  await assert.rejects(new CommerceService(repository,[A,B],'live').invoke(historyContext,{action:'service_history',exchangeId:e.id}),/not found/);
+  await assert.rejects(commerce.invoke(historyContext,{action:'service_history',exchangeId:e.id,beforeActionId:randomUUID()}),/not found/);
+  const historyState=await commerce.invoke(historyContext,{action:'state',exchangeId:e.id}) as {exchanges:{serviceActionHistoryCursor:string;serviceActions:{id:string}[]}[]};
+  assert.equal(historyState.exchanges[0]!.serviceActions.length,5);
+  assert.equal(historyState.exchanges[0]!.serviceActionHistoryCursor,all.at(-5)!.id);
   const messages=await pool.query("select count(*)::int n from pilot_messages where exchange_id=$1 and recipient_id=$2 and payload->>'action'='service_action_update'",[e.id,A]);
   assert(messages.rows[0].n>=10);
   for(const role of ['anon','authenticated']) {

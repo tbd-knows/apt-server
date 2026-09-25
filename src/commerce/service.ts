@@ -12,7 +12,7 @@ import { CommerceRepository, emptyPrivateInput } from './repository.js';
 import { harnessContext } from './harness.js';
 import { CommerceResearch, researchInputSchema } from './research.js';
 import { listConnections } from './connections.js';
-import { listServiceActions,prepareServiceAction,serviceActionSchema } from './service-actions.js';
+import { listServiceActions,prepareServiceAction,serviceActionSchema,serviceActionHistory,serviceHistorySchema } from './service-actions.js';
 import { proposeShippingData, decideShippingData, shippingDataView } from './shipping-consent.js';
 import { prepareShippingValidation,shippingValidationSchema } from './shipping-validation.js';
 import { prepareShippingRates,shippingRatesSchema } from './shipping-rates.js';
@@ -453,7 +453,7 @@ export class CommerceService {
       z.object({ action: z.literal('prepare_action'), exchangeId: z.uuid(), revision: z.number().int().positive(),
         command: preparedCommandSchema, explanation: z.string().trim().min(1).max(500) }).strict(),
       z.object({ action: z.literal('research'), exchangeId: z.uuid(), research: researchInputSchema }).strict(),
-      serviceActionSchema,
+      serviceActionSchema,serviceHistorySchema,
       shippingValidationSchema,shippingRatesSchema,
     ]).parse(raw);
     const actor = context.userId;
@@ -463,9 +463,10 @@ export class CommerceService {
         const view = exchangeView(e, actor);
         if (e.mode !== this.mode) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
         const [buyer, seller] = await Promise.all([this.repository.privateInput(e, e.buyerId), this.repository.privateInput(e, e.sellerId)]);
-        return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller),
+        const serviceActions=await listServiceActions(this,actor,e.id);
+        return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller,this.now()),
           shippingData: await shippingDataView(this,e,actor,this.now()),
-          deliveries: await this.deliveries(actor, e.id), research: await this.research.list(actor,e.id),connections:await listConnections(this,actor,e.id),serviceActions:(await listServiceActions(this,actor,e.id)).slice(-5) };
+          deliveries: await this.deliveries(actor, e.id), research: await this.research.list(actor,e.id),connections:await listConnections(this,actor,e.id),serviceActions:serviceActions.slice(-5),serviceActionHistoryCursor:serviceActions.length>5?serviceActions.at(-5)!.id:null };
       }));
       const inbox = (await this.inbox(actor)).filter(m => !command.exchangeId || m.exchangeId === command.exchangeId).slice(0, 10)
         .map(m => ({ id: m.id, exchangeId: m.exchangeId, kind: m.kind, text: m.payload.text ?? m.payload.reason ?? m.payload.action ?? null }));
@@ -474,6 +475,7 @@ export class CommerceService {
     }
     if (command.action === 'suggest_preference') return this.preference(actor, { key: command.key, value: command.value, provenance: command.provenance }, true);
     if (command.action === 'research') return this.research.request(actor,command.exchangeId,command.research);
+    if (command.action === 'service_history') return serviceActionHistory(this,actor,command);
     if (command.action === 'prepare_service_action') return prepareServiceAction(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_rates') return prepareShippingRates(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_validation') return prepareShippingValidation(this,actor,context.requestMessageId,command);
