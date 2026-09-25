@@ -15,8 +15,9 @@ import { verifyDropoff } from '../src/commerce/verified-dropoff.js';
 import { verifyPublicDropoff } from '../src/commerce/public-dropoff.js';
 import { shippoAddressArguments,shippoOperationMetadata } from '../src/commerce/shippo-evidence.js';
 import { upsLocationHtml,upsLocationUrl } from '../test/fixtures/ups-dropoff.js';
+import { uspsLocationHtml,uspsLocationUrl } from '../test/fixtures/usps-dropoff.js';
 
-export async function checkConnectedReturn(repository:CommerceRepository,original:Exchange,connection:string,root:string,tools:ServiceInvocation['tool'][]) {
+export async function checkConnectedReturn(repository:CommerceRepository,original:Exchange,connection:string,root:string,tools:ServiceInvocation['tool'][],noPrinter=false) {
   const pool=repository.pool,A=original.buyerId,B=original.sellerId;
   const originalBuyer=await repository.privateInput(original,A),originalSeller=await repository.privateInput(original,B);
   const service=new CommerceService(repository,[A,B],original.mode,undefined,null,true);
@@ -54,14 +55,15 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
         assert.equal(args.address_from.street2,originalBuyer.address!.street2);
         assert.equal(args.address_to.street2,originalSeller.address!.street2);
         assert.equal(args.parcels[0].weight,'43');assert.equal(args.metadata,shippoOperationMetadata(expectedAction));
+        assert.equal(args.extra.qr_code_requested,noPrinter);
         payload={...args,object_id:'return_shipment_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,status:'SUCCESS',
           parcels:[{...args.parcels[0],object_id:'return_parcel_fixture'}],
           rates:[{object_id:'return_rate_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',object_created:new Date().toISOString(),test:false,
-            shipment:'return_shipment_fixture',carrier_account:'return_carrier_fixture',provider:'UPS',servicelevel:{token:'ups_ground',name:'Ground'},
+            shipment:'return_shipment_fixture',carrier_account:'return_carrier_fixture',provider:noPrinter?'USPS':'UPS',servicelevel:{token:noPrinter?'usps_ground_advantage':'ups_ground',name:'Ground'},
             amount:'9.15',currency:'USD',estimated_days:3}]};
       } else {
         assert.equal(name,'GetCarrierAccount');assert.deepEqual(args,{CarrierAccountId:'return_carrier_fixture'});
-        payload={object_id:'return_carrier_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,active:true,carrier:'ups'};
+        payload={object_id:'return_carrier_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,active:true,carrier:noPrinter?'usps':'ups'};
       }
       result={content:[{type:'text',text:JSON.stringify({ContentType:'application/json',StatusCode:200,RawResponse:{},Response:payload})}]};
     }
@@ -76,7 +78,7 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
     await pool.query('update pilot_exchanges set data=$2 where id=$1',[order.id,order]);
     await command(A,{type:'propose_resolution',remedy:'return',reason:'Return the fixture item'});
     for(const actor of [A,B]) await command(actor,{type:'approve_resolution',binding:(await service.get(actor,order.id)).resolutionBinding});
-    await command(A,{type:'return_packing',packing:{weightOz:43,lengthIn:14,widthIn:9,heightIn:7,packed:true,canPrint:true}});
+    await command(A,{type:'return_packing',packing:{weightOz:43,lengthIn:14,widthIn:9,heightIn:7,packed:true,canPrint:!noPrinter}});
     await command(A,{type:'research_area',postcode:'10001'});
     const research=await service.research.request(A,order.id,{kind:'nearby'});
     assert.equal(research.state,'pending');assert(research.input.query?.includes('10001'));
@@ -111,12 +113,12 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
     }
     const sourceId=randomUUID();
     await pool.query("update pilot_research set state='ready',result=$2 where id=$1",[research.id,
-      {sources:[{id:sourceId,url:upsLocationUrl,title:'Official location',description:'Public source'}],checkedAt:new Date().toISOString(),verifiedForFulfillment:false}]);
+      {sources:[{id:sourceId,url:noPrinter?uspsLocationUrl:upsLocationUrl,title:'Official location',description:'Public source'}],checkedAt:new Date().toISOString(),verifiedForFulfillment:false}]);
     const dropoffInput=async()=>({action:'verify_dropoff',exchangeId:order.id,revision:await revision(),carrierActionId:option.id,researchId:research.id,sourceId});
-    const verify:Parameters<typeof verifyDropoff>[3]=request=>verifyPublicDropoff(request,()=>async()=>new Response(upsLocationHtml()));
+    const verify:Parameters<typeof verifyDropoff>[3]=request=>verifyPublicDropoff(request,()=>async()=>new Response(noPrinter?uspsLocationHtml():upsLocationHtml()));
     await assert.rejects(verifyDropoff(service,B,await dropoffInput(),verify),/other participant/);
     const location=await verifyDropoff(service,A,await dropoffInput(),verify);
-    assert.equal(location.dropoff.carrier,'UPS');assert.equal(location.dropoff.artifact,'pdf');
+    assert.equal(location.dropoff.carrier,noPrinter?'USPS':'UPS');assert.equal(location.dropoff.artifact,noPrinter?'label_qr':'pdf');
     assert.equal((await service.get(A,order.id)).verifiedDropoff?.id,location.id);
     assert.equal((await service.get(B,order.id)).verifiedDropoff,null);
     // An old outbound carrier receipt cannot become reverse-shipment evidence.
@@ -127,7 +129,7 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
     assert.deepEqual(await returnShippingOptions(service,A,order.id),[]);
     assert.equal(created,1);assert.equal(calls,4);
     assert.equal(digest((await repository.get(order.id,A)).offers.at(-1)),digest(offer),'Return planning cannot replace the paid sale');
-    process.stdout.write('PASS: separate return consent, original account, reversed private SDK validation/rates, buyer packing/research/drop-off, safe shared rate evidence, stale outbound rejection and input invalidation; synthetic providers only.\n');
+    process.stdout.write(`PASS: separate return consent, original account, reversed private SDK validation/rates, buyer packing/research/${noPrinter?'USPS retail QR':'UPS PDF'} drop-off, safe shared rate evidence, stale outbound rejection and input invalidation; synthetic providers only.\n`);
   } finally {
     await repository.transaction(async sql=>{
       await sql.query('update pilot_exchanges set data=$2,revision=$3 where id=$1',[original.id,original,original.revision]);

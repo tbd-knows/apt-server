@@ -45,10 +45,12 @@ async function context(commerce:CommerceService,sql:PoolClient,actor:string,inpu
   if(!mine.discoveryPostcode || research?.input.addressVersion!==(mine.discoveryVersion ?? 0)
     || !source || !supportedDropoffSource(source.url)) conflict('Choose an observed official location from research for your current discovery area.');
   const packing=returning?mine.returnPacking:mine.packing;
-  if(!packing?.canPrint || !((option.carrierToken==='fedex' && rate.serviceToken==='fedex_ground')
-    || (option.carrierToken==='ups' && rate.serviceToken==='ups_ground'))) {
-    conflict('This verifier supports FedEx Ground and UPS Ground with a printed label. Research another compatible path when needed.');
+  const usps=option.carrierToken==='usps' && rate.serviceToken==='usps_ground_advantage';
+  if(!packing || !(usps || packing.canPrint && ((option.carrierToken==='fedex' && rate.serviceToken==='fedex_ground')
+    || (option.carrierToken==='ups' && rate.serviceToken==='ups_ground')))) {
+    conflict('Choose supported FedEx/UPS Ground printed-label shipping or USPS Ground Advantage with verified retail printing.');
   }
+  if(!packing.canPrint && !ratedShippingSource(rates).shipment.qrRequested) conflict('Request a provider printing code with the shipment before checking a no-printer location.');
   const value=option.carrierToken==='ups'?{itemValue:(returning?e.offers.at(-1)?.item:e.item)?.sellerAmount}:{};
   const expiresAt=new Date(Math.min(Date.parse(rate.expiresAt),Date.parse(e.shippingData!.expiresAt))).toISOString();
   const binding=digest({exchangeId:e.id,mode:e.mode,actor,carrierActionId:row.id,option,rate,

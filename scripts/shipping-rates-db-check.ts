@@ -431,6 +431,7 @@ try {
   await pool.query('update pilot_service_actions set generation=$2 where connection_id=$1',[connection,generation]);
   await checkConnectedWorker(repository,liveExchange,connection,root,[read,write],describe);
   await checkConnectedReturn(repository,liveExchange,connection,root,[read,write]);
+  await checkConnectedReturn(repository,liveExchange,connection,root,[read,write],true);
   // Expire this synthetic offer and update its matching private digest: expiry
   // prohibits spend preflight while canonical known-transaction reads remain.
   offer.expiresAt='2026-01-01T00:00:00Z';

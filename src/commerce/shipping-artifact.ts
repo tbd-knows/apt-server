@@ -6,6 +6,7 @@ import { publicAddress,publicEndpoint } from './public-http.js';
 
 const MAX_BYTES=5*1024*1024;
 export type ShippingArtifact = {artifact:'pdf';mime:'application/pdf';base64:string}
+  | {artifact:'label_qr';mime:'application/pdf';base64:string}
   | {artifact:'label_qr';mime:'image/png';base64:string;width:number;height:number};
 
 /** The caller must have reconciled a paid provider transaction and authorized
@@ -25,10 +26,10 @@ export async function downloadShippingArtifact(value:string,artifact:'pdf'|'labe
     const selected=answers[0]!;
     const result=await new Promise<{bytes:Buffer;mime:string}>((resolve,reject)=>{
       const req=request(url,{method:'GET',agent:false,signal,headers:{'accept-encoding':'identity',
-        accept:artifact==='pdf'?'application/pdf':'image/png','user-agent':'TBD-private-postage/1.0'},
+        accept:artifact==='pdf'?'application/pdf':'image/png, application/pdf','user-agent':'TBD-private-postage/1.0'},
       lookup:(_host,options,done)=>options.all?done(null,[selected]):done(null,selected.address,selected.family)},res=>{
         const mime=String(res.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
-        if(res.statusCode!==200 || mime!==(artifact==='pdf'?'application/pdf':'image/png')
+        if(res.statusCode!==200 || !(artifact==='pdf'?['application/pdf']:['image/png','application/pdf']).includes(mime)
           || !['','identity'].includes(String(res.headers['content-encoding'] ?? ''))
           || Number(res.headers['content-length'] ?? 0)>MAX_BYTES) {res.destroy();reject(new Error());return;}
         const chunks:Buffer[]=[];let size=0;
@@ -47,9 +48,11 @@ export async function downloadShippingArtifact(value:string,artifact:'pdf'|'labe
 }
 export async function validateShippingArtifact(bytes:Buffer,mime:string,artifact:'pdf'|'label_qr'):Promise<ShippingArtifact> {
   if(!bytes.length || bytes.length>MAX_BYTES) conflict('Postage artifact size is not supported.');
-  if(artifact==='pdf') {
+  if(artifact==='pdf' || mime==='application/pdf') {
     if(mime!=='application/pdf' || !/^%PDF-1\.[0-9]|^%PDF-2\.0/.test(bytes.subarray(0,8).toString('ascii'))
       || !bytes.subarray(-1024).toString('ascii').includes('%%EOF')) conflict('Provider artifact is not a complete printable PDF.');
+    // Artifact semantics come from the reconciled transaction's label_url vs
+    // qr_code_url, never from the PDF bytes. Shippo can return a QR document.
     return {artifact,mime,base64:bytes.toString('base64')};
   }
   if(mime!=='image/png' || !bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) conflict('Provider printing code is not a supported PNG.');

@@ -225,7 +225,8 @@ export function shippoTransaction(receipt: ServiceResult, binding: ShippoTransac
   requireEvidence(transaction.parcel === binding.parcelId && transaction.tracking_number?.trim());
   let url: string;
   if (binding.artifact === 'label_qr') {
-    // Current supported domestic path. A tracking barcode/PDF is never a QR.
+    // Semantics come only from qr_code_url, which may contain a PNG or QR PDF.
+    // Never substitute the shipping label_url or generate a tracking barcode.
     requireEvidence(binding.qrRequested && binding.carrierToken === 'usps');
     url = artifactUrl(transaction.qr_code_url);
   } else {

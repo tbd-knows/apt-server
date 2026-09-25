@@ -118,9 +118,9 @@ describe('private postage downloads',()=>{
     expect(state.requests).toBe(0);state.status=302;
     await expect(downloadShippingArtifact(url,'pdf')).rejects.toThrow('could not be retrieved');expect(state.requests).toBe(1);
   });
-  it('rejects mislabeled, compressed or oversized downloads and never substitutes PDF for printing QR',async()=>{
+  it('preserves the canonical QR document kind and rejects mislabeled, compressed or oversized downloads',async()=>{
     state.type='application/pdf';state.body='%PDF-1.7\nfixture\n%%EOF';
-    await expect(downloadShippingArtifact(url,'label_qr')).rejects.toThrow();
+    expect(await downloadShippingArtifact(url,'label_qr')).toMatchObject({artifact:'label_qr',mime:'application/pdf'});
     state.encoding='gzip';await expect(downloadShippingArtifact(url,'pdf')).rejects.toThrow();state.encoding='';
     state.body='x'.repeat(5*1024*1024+1);await expect(downloadShippingArtifact(url,'pdf')).rejects.toThrow();
     state.type='image/png';state.body=await sharp({create:{width:48,height:48,channels:3,background:'white'}}).png().toBuffer();

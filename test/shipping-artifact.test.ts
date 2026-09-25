@@ -9,7 +9,8 @@ describe('paid artifact byte validation',()=>{
     for(const bytes of [Buffer.from('<html>paid</html>'),Buffer.from('%PDF-1.7\ntruncated'),Buffer.alloc(5*1024*1024+1)]) {
       await expect(validateShippingArtifact(bytes,'application/pdf','pdf')).rejects.toThrow();
     }
-    await expect(validateShippingArtifact(pdf,'application/pdf','label_qr')).rejects.toThrow();
+    expect(await validateShippingArtifact(pdf,'application/pdf','label_qr')).toMatchObject({artifact:'label_qr',mime:'application/pdf'});
+    await expect(validateShippingArtifact(Buffer.from('%PDF-1.7\ntruncated'),'application/pdf','label_qr')).rejects.toThrow();
   });
   it('strips PNG metadata while preserving exact pixel geometry and data',async()=>{
     const source=await sharp({create:{width:80,height:96,channels:3,background:'#010203'}}).withMetadata({orientation:6}).png().toBuffer();

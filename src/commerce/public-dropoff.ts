@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { conflict, packingSchema, type Dropoff, type Packing } from './domain.js';
 import { publicLocationFetch } from './public-http.js';
 import { publicUpsDropoff,supportedUpsDropoffSource } from './public-ups-dropoff.js';
+import { publicUspsDropoff,supportedUspsDropoffSource } from './public-usps-dropoff.js';
 
 const location = /^https:\/\/local\.fedex\.com\/en-us\/[a-z]{2}\/[a-z0-9-]+\/[a-z0-9-]+$/;
-export function supportedDropoffSource(url: string) { return location.test(url) || supportedUpsDropoffSource(url); }
+export function supportedDropoffSource(url: string) { return location.test(url) || supportedUpsDropoffSource(url) || supportedUspsDropoffSource(url); }
 const days = ['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'] as const;
 const time = z.number().int().min(0).max(2400).refine(n => n % 100 < 60 && (n < 2400 || n === 2400));
 const day = z.object({ day: z.enum(days), isClosed: z.boolean(), intervals: z.array(z.object({ start: time, end: time })).max(4) });
@@ -57,7 +58,8 @@ export function publicFedexDropoff(raw: unknown, entityId: string, request: Drop
 
 export async function verifyPublicDropoff(request: DropoffRequest, fetcher = publicLocationFetch): Promise<Dropoff> {
   const ups=supportedUpsDropoffSource(request.sourceUrl) && request.carrierToken==='ups' && request.serviceToken==='ups_ground';
-  if (!ups && (!location.test(request.sourceUrl) || request.carrierToken !== 'fedex' || request.serviceToken !== 'fedex_ground')) {
+  const usps=supportedUspsDropoffSource(request.sourceUrl) && request.carrierToken==='usps' && request.serviceToken==='usps_ground_advantage';
+  if (!ups && !usps && (!location.test(request.sourceUrl) || request.carrierToken !== 'fedex' || request.serviceToken !== 'fedex_ground')) {
     conflict('An observed supported official location page is required for this selected service.');
   }
   try {
@@ -65,6 +67,7 @@ export async function verifyPublicDropoff(request: DropoffRequest, fetcher = pub
     if(response.status!==200) throw new Error();
     const html=await response.text();
     if(ups) return publicUpsDropoff(html,request);
+    if(usps) return publicUspsDropoff(html,request);
     const matches=[...html.matchAll(/Yext\["EntityId"\]\s*=\s*"([A-Za-z0-9_-]{1,64})"/g)];
     if(matches.length!==1) throw new Error();
     const entityId=matches[0]![1]!;

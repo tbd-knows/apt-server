@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { approvalFor, type Exchange, type Operation } from '../src/commerce/domain.js';
+import { approvalFor, digest, type Exchange, type Operation } from '../src/commerce/domain.js';
 import { ConnectedShipping } from '../src/commerce/connected-shipping.js';
 import { connectedShippingContracts } from '../src/commerce/connected-shipping-read.js';
 import { CommerceWorker } from '../src/commerce/worker.js';
@@ -25,6 +25,7 @@ export async function checkConnectedWorker(repository:CommerceRepository,origina
   let purchases=0,refunds=0,reads=0,paidChecks=0,checkouts=0;
   let transactionStatus='SUCCESS',trackingStatus='PRE_TRANSIT',refundStatus='PENDING';
   let malformedLabel=false,losePurchase=false,loseRefund=false,trackingFails=false;
+  let qrScenario=false,missingQr=false;
   let eventTime=new Date().toISOString();
   let beforeDispatch:((name:string)=>Promise<void>)|undefined,afterDispatch:((name:string)=>Promise<void>)|undefined;
   const fact:PaymentFact={sessionId:'cs_connected_fixture',status:'paid',amount:offer.buyerTotal,currency:'usd',
@@ -51,7 +52,8 @@ export async function checkConnectedWorker(repository:CommerceRepository,origina
       const transaction={object_id:'transaction_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,
         metadata:shippoOperationMetadata(labelId),rate:offer.quote.rateId,parcel:'parcel_fixture',status:transactionStatus,
         tracking_number:'TRACKING_FIXTURE',label_file_type:'PDF',label_url:malformedLabel?'http://unsafe.invalid/':
-          'https://deliver.goshippo.com/label.pdf?signature=PRIVATE_ARTIFACT_CANARY'};
+          'https://deliver.goshippo.com/label.pdf?signature=PRIVATE_ARTIFACT_CANARY',
+        ...(qrScenario && !missingQr?{qr_code_url:'https://deliver.goshippo.com/label-broker.pdf?signature=PRIVATE_QR_CANARY'}:{})};
       if(name==='CreateTransaction') {
         purchases++;
         assert.deepEqual(args,{rate:offer.quote.rateId,label_file_type:'PDF',metadata:shippoOperationMetadata(labelId),async:false});
@@ -63,11 +65,11 @@ export async function checkConnectedWorker(repository:CommerceRepository,origina
       else if(name==='GetRate') payload={object_id:offer.quote.rateId,object_owner:'PRIVATE_ACCOUNT_CANARY',object_created:new Date().toISOString(),
         test:false,shipment:offer.quote.shipmentId,carrier_account:offer.quote.carrierAccountId,provider:offer.quote.carrier,
         servicelevel:{token:offer.quote.service,name:'Ground'},amount:'8.05',currency:'USD'};
-      else if(name==='GetCarrierAccount') payload={object_id:offer.quote.carrierAccountId,object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,active:true,carrier:'fedex'};
+      else if(name==='GetCarrierAccount') payload={object_id:offer.quote.carrierAccountId,object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,active:true,carrier:qrScenario?'usps':'fedex'};
       else if(name==='GetTrack') {
         if(trackingFails) throw new Error('synthetic tracking outage');
-        assert.deepEqual(args,{Carrier:'fedex',TrackingNumber:'TRACKING_FIXTURE'});
-        payload={carrier:'fedex',tracking_number:'TRACKING_FIXTURE',transaction:'transaction_fixture',
+        assert.deepEqual(args,{Carrier:qrScenario?'usps':'fedex',TrackingNumber:'TRACKING_FIXTURE'});
+        payload={carrier:qrScenario?'usps':'fedex',tracking_number:'TRACKING_FIXTURE',transaction:'transaction_fixture',
           tracking_status:{object_id:`event_${trackingStatus}`,object_updated:eventTime,status_date:eventTime,status:trackingStatus}};
       } else if(name==='CreateRefund') {
         refunds++;assert.deepEqual(args,{transaction:'transaction_fixture',async:false});
@@ -146,6 +148,30 @@ export async function checkConnectedWorker(repository:CommerceRepository,origina
     const delivered=await service.get(e.buyerId,e.id);
     await service.command(e.buyerId,e.id,randomUUID(),delivered.revision,{type:'received'});assert.equal((await current()).stage,'completed');
     assert.equal(purchases,1);
+    // A paid no-printer shipment must return the provider's QR artifact. A
+    // perfectly valid label PDF never substitutes; polling keeps one purchase.
+    const originalOffer=structuredClone(offer),sellerInput=await repository.privateInput(e,e.sellerId);
+    qrScenario=true;missingQr=true;
+    offer.quote={...offer.quote,carrier:'USPS',service:'usps_ground_advantage',artifact:'label_qr',
+      dropoff:{...offer.quote.dropoff,carrier:'USPS',service:'usps_ground_advantage',artifact:'label_qr'}};
+    const qrSeller=structuredClone(sellerInput),qrShipping=qrSeller.connectedShipping![String(offer.version)]!;
+    qrShipping.carrierToken='usps';qrShipping.qrRequested=true;qrShipping.offerDigest=digest(offer);
+    qrSeller.packing={...qrSeller.packing!,canPrint:false};
+    await repository.transaction(sql=>repository.savePrivate(sql,e,e.sellerId,qrSeller));
+    try {
+      await reset();await run();
+      assert.equal(purchases,1);assert.equal((await op(labelId)).providerId,'transaction_fixture');
+      assert.notEqual((await current()).shipping,'label_ready');
+      missingQr=false;await pool.query("update pilot_operations set state='uncertain' where id=$1",[labelId]);await run();
+      assert.equal(purchases,1);assert.equal((await current()).shipping,'label_ready');
+      const artifact=await driver().transaction(await current(),offer,labelId,'transaction_fixture');
+      assert.equal(artifact.state,'purchased');
+      if(artifact.state==='purchased') {assert.equal(artifact.artifact,'label_qr');assert(artifact.privateArtifactUrl.includes('label-broker.pdf'));}
+      assert(!JSON.stringify(await service.get(e.sellerId,e.id)).includes('PRIVATE_QR_CANARY'));
+    } finally {
+      Object.assign(offer,originalOffer);qrScenario=false;missingQr=false;
+      await repository.transaction(sql=>repository.savePrivate(sql,e,e.sellerId,sellerInput));
+    }
     // Canonical Stripe state is checked after MCP catalogue discovery, before
     // dispatch. A locally paid order is insufficient.
     for(const mutation of ['unpaid','untransferred','partial','reversed','cancel','approval','revoked','schema'] as const) {

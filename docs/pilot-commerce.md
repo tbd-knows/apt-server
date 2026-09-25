@@ -23,7 +23,7 @@ approved SDK harness, returning private-data-minimized carrier/price options.
 Authenticated production schema compatibility remains unverified. Exact connected
 offers, once-only paid label dispatch, private artifacts, tracking, and unused-postage
 refunds are now integrated into the worker and exercised with SDK/Postgres fixtures.
-Connected return preparation supports fresh consent, reversed private addresses, buyer packing and drop-off research. Return postage purchase and no-printer paths remain incomplete. Hosted-service rates are explicitly live-provider evidence even when
+Connected return preparation supports fresh consent, reversed private addresses, buyer packing and drop-off research. Return postage purchase remains incomplete. USPS Ground Advantage supports a verified retail Label Broker no-printer path with canonical provider-issued PNG/PDF printing artifacts; actual provider purchase and physical scan acceptance are still unverified. Hosted-service rates are explicitly live-provider evidence even when
 the surrounding commerce exchange is in test mode.
 The [persistent single-host deployment](persistent-pilot-host.md) now includes
 stable private routes, three supervised services, HTTPS routing, provisioning and
@@ -480,11 +480,49 @@ Sources checked September 25:
 - [UPS package limits](https://www.ups.com/us/en/support/shipping-support/shipping-dimensions-weight/avoid-additional-shipping-fees).
 - [Shippo carrier and service tokens](https://docs.goshippo.com/shippoapi/public-api/service-levels/other-supported-carriers).
 - [USPS Label Broker](https://www.usps.com/business/label-broker.htm) requires a
-  participating location. The public USPS locator returned a browser challenge
-  during this run; no local Label Broker capability was inferred or claimed.
+  participating location. The earlier generic USPS locator URL returned a
+  challenge; the current official `tools.usps.com/locations/details/<id>` page
+  is readable by the existing bounded server transport, as verified below.
 
 The actual server public-fetch transport and parser verified UPS Store #6584
 (Ground/PDF, hours and restrictions) on September 25 at 16:16:51 UTC. That was a
 read-only public lookup, not a booking or postage purchase. Automated tests use
 synthetic pages and authenticated SDK fixtures. The return preparation database
 test exercises a FedEx outbound order with a separately checked UPS return option.
+
+## USPS retail Label Broker and no-printer artifacts
+
+The server now accepts an observed official USPS detail URL for Ground Advantage.
+It parses only that page's serialized `poDetail` JSON; scripts are never executed.
+The exact facility ID, Post Office type, carrier service, non-suspended state and
+regular retail hours must match. No-printer packing additionally requires the
+specific `LBRORETAIL` service. Nearby facilities, lobby/kiosk hours and a generic
+Label Broker page cannot establish this counter's capability. USPS Ground
+Advantage's 70-pound and 130-inch length-plus-girth limits apply. Hours are shown
+as regular local counter hours with a holiday/change notice.
+
+The existing free shipment must have requested a QR printing code. A compatible
+location still does not establish purchased postage: the worker requires canonical
+Stripe payment, exact approvals and the purchased transaction's `qr_code_url`.
+A missing QR never falls back to `label_url`, generates a tracking barcode or
+submits another purchase. The existing transaction is retrieved until its original
+artifact is available. Provider QR artifacts may be PNG or PDF. PNG remains
+losslessly sanitized and displayed uncropped; a provider QR PDF keeps its separate
+`label_qr` identity and opens through the phone's document sharing flow. Temporary
+PDF files are removed after the sharing flow closes. No signed URL enters mobile
+or model state. An exported/saved copy is managed by the receiving phone app.
+
+On September 25, 2026, the production DNS-pinned transport fetched the official
+[James A Farley location](https://tools.usps.com/locations/details/1433785), and
+the parser verified retail Label Broker/hours for a sample shoe-box parcel
+(`usps-1433785`, checked at 20:20:51 UTC). This was public information only; no
+user credentials, shipment or postage purchase was used. Tests use synthetic
+location/provider data and real Postgres/MCP execution: suspended/wrong locations,
+kiosk-only evidence, stale inputs, QR request binding, separate return preparation,
+missing-code recovery without repurchase, and private artifact handling. Physical
+phone document viewing and a paid provider QR's counter scan still require the
+agreed acceptance run.
+
+Sources: [USPS Label Broker](https://www.usps.com/business/label-broker.htm),
+[USPS Ground Advantage](https://www.usps.com/ship/ground-advantage.htm),
+[Shippo transaction QR field](https://docs.goshippo.com/shippoapi/public-api/transactions/createtransaction).
