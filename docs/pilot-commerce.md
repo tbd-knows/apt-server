@@ -5,8 +5,9 @@ delivery and durable private action preparation are implemented and tested with
 two actual isolated gateways, Postgres and a deterministic model. Owner-scoped
 service research now runs through the gateway using Hermes's keyless search
 provider; source reads are bounded public HTTPS requests. See
-[A2A implementation and evidence](hermes-a2a.md). This does not establish the
-complete intelligent discovery/fulfillment experience.
+[A2A implementation and evidence](hermes-a2a.md). The native harness also joins nine owner-agent preparations with exact human
+approvals and synthetic provider fulfillment through delivery/receipt/settlement.
+This does not establish live-model discovery or real-provider acceptance.
 
 Stripe is the only mandatory commerce-provider integration. The EasyPost/FedEx
 adapter documented below is an optional existing execution path, not the target
@@ -251,11 +252,12 @@ a new payment or postage operation.
 | Refund failure | Review/reconcile the same refund operation. A known pending refund is retrieved by ID, including beyond the creation idempotency window. Buyer refund and transfer reversal must both be confirmed. Partial external refunds/reversals or disputes require provider-dashboard reconciliation. |
 | Unused postage | Separate label refund operation. Rejected carrier refund remains visible; both founders may explicitly approve absorbing that postage cost. It is never called a buyer refund. |
 | After carrier acceptance | Record a problem and propose a remedy. Both founders approve exact refund/continue/return terms. No automatic dispute adjudication. |
-| Agreed return | Original addresses reversed; buyer confirms new packing/printer access. Obtain a separate rate/drop-off, both approve additional platform-funded postage, then buy once. Carrier return delivery plus seller receipt triggers the agreed original full refund/reversal. |
+| Agreed return | Connected sales require fresh two-owner disclosure, reversed addresses, buyer packing and a verified separate option. Connected return purchase is still blocked pending the additional funding/lifecycle implementation. Historical platform-funded sales retain their separately approved legacy return path. |
 
 Return address changes are deliberately blocked; resolve changed locations with
-the founders before shipping. The first supported path is printed FedEx Ground
-PDF, not a generic QR or pickup booking. Address/parcel correction, missing
+the founders before shipping. Connected free return preparation supports printed
+FedEx/UPS Ground or verified USPS Ground Advantage retail printing. A generic QR
+or pickup reservation is never inferred. Address/parcel correction, missing
 capabilities and no-printer states fail visibly before commitment.
 
 Stripe bank payout attribution uses automatic payout balance transactions tied
@@ -435,9 +437,10 @@ purchase or authenticated hosted-account compatibility claim.
 
 Connected returns deliberately cannot fall through to the old platform-funded
 return adapter. Implement the connected reverse-shipment and separately approved
-funding path before enabling those returns. Other remaining engineering includes
-broader supported carrier/drop-off/no-printer paths, account-lifetime recovery,
-full positive model-driven acceptance and persistent deployment. Founder-controlled
+funding path before enabling those returns. USPS retail no-printer verification, FedEx/UPS printed-label verification, account
+refresh/reconnect, unchanged paid-postage renewal and persistent-host configuration
+are implemented. The native positive fixture now joins agent preparation to
+synthetic provider fulfillment; live-model and deployed-host acceptance remain. Founder-controlled
 service authorization, Stripe onboarding/credentials, real payments, phones,
 physical handoff/delivery and review/merge remain distinct acceptance steps.
 

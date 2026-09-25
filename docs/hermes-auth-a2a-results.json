@@ -6,6 +6,7 @@
   "database": "disposable PostgreSQL",
   "model": "deterministic fixture; not live-model acceptance",
   "agentCards": "pass",
+  "hostReadOnlyProbes": "pass: both APIs and both A2A peer tokens; unauthenticated tasks denied",
   "approvedInquiryAndDecline": "pass",
   "receiverPrivateWake": "pass",
   "wrongKeyAndForeignMessage": "pass",
@@ -13,9 +14,19 @@
   "receiptNoPrivateOutput": "pass",
   "duplicateNoSecondOwnerTurn": "pass",
   "restartPendingDelivery": "pass",
+  "positiveFlow": {
+    "exchangeId": "c628fd57-5378-4247-bd8f-0f905088a9f2",
+    "agentPreparations": 9,
+    "postagePurchases": 1,
+    "checkouts": 1,
+    "carrier": "USPS Ground Advantage",
+    "artifact": "provider QR PDF",
+    "result": "completed with human receipt and exact seller reimbursement/payout",
+    "syntheticBoundaries": "model choices, authorized OAuth/catalog, photo storage, public location HTTP, Stripe and shipping responses; no real payment/postage/delivery"
+  },
   "privateModelMcpPreparation": "pass",
   "humanDecisionRequired": "pass",
   "buyerPrivateCanariesAbsentFromSellerModel": "pass",
   "publicResearch": "not run",
-  "testedAt": "2026-09-25T13:41:20.172Z"
+  "testedAt": "2026-09-25T21:36:11.894Z"
 }

@@ -1,6 +1,7 @@
 /** Real isolated Hermes gateways + real Postgres; deterministic model only.
  * Run after test:local-db. No provider commerce credentials or paid effects. */
 import assert from 'node:assert/strict';
+import { checkHermesPositive, PositiveFixtureCommerce, type NativeAgentStep } from './hermes-positive-check.js';
 import { testAccountAuth } from './test-account-auth.js';
 import { randomUUID } from 'node:crypto';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
@@ -36,7 +37,8 @@ const actors = liveAuth?.actors ?? ['11111111-1111-4111-8111-111111111111', '222
 const profiles = ['apt-aaaaaaaaaaaaaaaaaaaa', 'apt-bbbbbbbbbbbbbbbbbbbb'];
 const secret = 'deterministic-fixture-key-not-a-production-secret';
 const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-const commerce = new CommerceService(new CommerceRepository(pool), actors, 'test');
+const commerce = new PositiveFixtureCommerce(new CommerceRepository(pool), actors, 'live',undefined,
+  {taxAmount:0,taxTreatment:'Synthetic acceptance fixture',subsidy:'Synthetic processing fee subsidy'},true);
 const chat = PostgresChatRepository.create(databaseUrl, false);
 const memoryRepository = PostgresMemoryRepository.create(databaseUrl, false);
 const memory = new MemoryService(memoryRepository, undefined, commerce);
@@ -45,6 +47,8 @@ const children: ChildProcess[] = [];
 const diagnostics: string[] = [];
 let fixtureExchangeId: string | null = null;
 let proposed = false;
+let positiveStep: {index:number;exchangeId:string;input:()=>Promise<unknown>} | null = null;
+let positiveCalls=0;
 let authClosed = false;
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function port() {
@@ -77,6 +81,12 @@ const model = createServer(async (request, response) => {
           command: { type: 'decline', reason: 'I do not own that pair' }, explanation: 'Please review whether you want to decline this inquiry.' },
       }) } };
     }
+  }
+  if(positiveStep && request.headers.authorization===`Bearer fixture-provider-${positiveStep.index}` && raw.includes(positiveStep.exchangeId)) {
+    const step=positiveStep;positiveStep=null;positiveCalls++;
+    call={id:`call_positive_${positiveCalls}`,type:'function',function:{name:'tool_call',arguments:JSON.stringify({
+      name:'mcp__apt__apt_commerce',arguments:await step.input(),
+    })}};
   }
   const output = 'An approved commerce message needs your attention. I am waiting for your decision.';
   if (body.stream) {
@@ -210,6 +220,30 @@ try {
   const inbox = await commerce.inbox(actors[0]!); assert(inbox.some(m=>m.id===decline.id));
   const ledger = await pool.query('select a2a_task_id from pilot_messages where id=any($1::uuid[])', [[message.id,decline.id]]);
   assert(ledger.rows.every(r=>r.a2a_task_id));
+  const nativeStep:NativeAgentStep=async(index,exchangeId,input,check,label)=>{
+    assert.equal(positiveStep,null);positiveStep={index,exchangeId,input};
+    await commerce.repository.transaction(async sql=>{
+      const e=await commerce.repository.get(exchangeId,actors[index]!,sql);
+      await commerce.repository.message(sql,e,actors[index]!,actors[index]!,'status',{action:'owner_update',text:'Synthetic human asks agent to continue this exchange.'});
+    });
+    await eventually(check,label);
+    assert.equal(positiveStep,null,`${label} bypassed the native model/tool call`);
+  };
+  const human=async(index:number,id:string,command:unknown)=>{
+    const view=await commerce.get(actors[index]!,id);
+    if(liveAuth) return publicRequest(index,`/v1/commerce/exchanges/${id}/actions`,{key:randomUUID(),revision:view.revision,command});
+    return commerce.command(actors[index]!,id,randomUUID(),view.revision,command);
+  };
+  const positiveFlow=await checkHermesPositive(commerce,secret,nativeStep,human,eventually,
+    liveAuth?input=>publicRequest(0,'/v1/commerce/requests',{key:randomUUID(),input}):undefined);
+  assert.equal(positiveCalls,positiveFlow.agentPreparations);
+  for(const owner of [0,1]) {
+    const privateCalls=calls.filter(c=>c.key===`Bearer fixture-provider-${owner}`);
+    if(owner===1) assert(privateCalls.every(c=>!c.body.includes('937123')),'Buyer budget leaked to seller model');
+    for(const privateValue of ['PRIVATE_ADDRESS_CANARY','PRIVATE_ACCOUNT_CANARY','TOKEN_CANARY','PRIVATE_ARTIFACT_CANARY',`OWNER_PRIVATE_CANARY_${1-owner}`]) {
+      assert(privateCalls.every(c=>!c.body.includes(privateValue)),`Owner ${owner} model received ${privateValue}`);
+    }
+  }
   let publicResearch = 'not run';
   if (process.env.APT_RESEARCH_NETWORK_CHECK === '1') {
     const researchDraft = await commerce.create(actors[0]!,randomUUID(),{request:draft.request,privateBudget:937123});
@@ -228,10 +262,10 @@ try {
     agentCards: 'pass', hostReadOnlyProbes: 'pass: both APIs and both A2A peer tokens; unauthenticated tasks denied',
     approvedInquiryAndDecline: 'pass', receiverPrivateWake: 'pass', wrongKeyAndForeignMessage: 'pass',
     hostilePeerDoesNotInvokeModel: 'pass', receiptNoPrivateOutput: 'pass', duplicateNoSecondOwnerTurn: 'pass', restartPendingDelivery: 'pass',
-    privateModelMcpPreparation: 'pass', humanDecisionRequired: 'pass', buyerPrivateCanariesAbsentFromSellerModel: 'pass', publicResearch, testedAt: new Date().toISOString() };
+    positiveFlow, privateModelMcpPreparation: 'pass', humanDecisionRequired: 'pass', buyerPrivateCanariesAbsentFromSellerModel: 'pass', publicResearch, testedAt: new Date().toISOString() };
   await liveAuth?.close(); authClosed = true;
   await writeFile(liveAuth ? 'docs/hermes-auth-a2a-results.json' : 'docs/hermes-a2a-results.json', JSON.stringify(report,null,2)+'\n');
-  process.stdout.write('PASS: actual Hermes A2A between two isolated gateways, Postgres receipts, recipient wake, duplicate/restart recovery, hostile/foreign denial. Model is deterministic.\n');
+  process.stdout.write('PASS: actual Hermes A2A between two isolated gateways, Postgres receipts, recipient wake, duplicate/restart recovery, hostile/foreign denial and positive connected sale through nine native agent preparations, exact approvals, one checkout/postage, QR artifact evidence, delivery/receipt and settlement. Model/provider responses are deterministic.\n');
 } finally {
   await Promise.all(children.map(stop)); await app.close(); await pool.end(); await memoryRepository.close();
   await new Promise<void>(resolve => model.close(() => resolve()));

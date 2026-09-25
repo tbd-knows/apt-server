@@ -55,8 +55,9 @@ shipping state or provider operation.
 Owner-approved remote MCP inspection is now implemented as described below.
 Remote OAuth connections now support owner review, public-client registration,
 PKCE, encrypted credentials, rechecking/refresh and disconnection as described
-below. Fulfillment execution with exact approvals and canonical reconciliation
-remains necessary before this workflow can ship an item.
+below. Connected outbound fulfillment now enforces exact approvals and canonical
+reconciliation. Authenticated provider compatibility and live acceptance remain
+unverified; connected return purchase is still incomplete.
 Unsupported/credential-required services must remain explicit blockers. In
 particular, the [official UPS MCP](https://github.com/UPS-API/ups-mcp) documents
 tracking/address validation and application credentials; its existence does not
@@ -70,8 +71,7 @@ Shippo service's [operation reference](https://github.com/goshippo/ai/blob/main/
 [response envelope](https://github.com/goshippo/ai/blob/main/skills/shippo/references/response-envelope.md)
 and [published OpenAPI](https://docs.goshippo.com/spec/shippoapi/public-api.yaml).
 Free address validation and shipment/rate creation/retrieval now consume this
-contract through the approved service-action harness. Paid label execution is
-not yet wired into the commerce worker. Generic service execution remains denied.
+contract through the approved service-action harness. Paid label execution now consumes the same contracts in the connected worker. Generic service execution remains denied.
 
 The component builds shipment parameters from server-resolved private forms,
 without silently rounding dimensions. Receipt checks bind provider account,
@@ -386,13 +386,13 @@ sends no account credentials/cookies, refuses redirects/compression and bounds
 time and bytes. The existing paid EasyPost PDF route now uses this transport.
 The sender/mode/payment/approved-shipment checks still run before downloading.
 
-PDF and provider printing-code PNG are distinct typed responses. PDFs require a
+Label PDF and provider printing codes are distinct typed responses. A canonical
+printing code may itself be PNG or PDF. PDFs require a
 header and end marker. PNGs are decoded under pixel/byte limits and re-encoded
 losslessly to remove metadata without resizing or cropping. This validates bytes,
 not whether an arbitrary image is a valid printing QR: provider-issued semantics
-must come from the independently reconciled paid transaction. The Shippo paid
-worker integration is not yet implemented, so this component does not itself
-make a discovered-service QR available.
+must come from the independently reconciled paid transaction. The connected worker now retrieves that evidence from its recorded purchase;
+a normal label URL cannot be substituted for a missing provider printing code.
 
 Mobile keeps PDF sharing and printing-code display separate. A PNG printing code
 can be shown directly in a white, uncropped view on the phone and is removed from
