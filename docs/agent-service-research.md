@@ -375,3 +375,27 @@ duplicates, uncertain dispatch, changed account rejection, preflight withdrawal,
 private projections and unchanged financial/shipping state. CI runs this suite.
 The fixture wrapper/description shapes have not been verified with an authenticated
 production Shippo account; this is not a claim of real provider acceptance.
+
+
+## Private paid artifact delivery
+
+`shipping-artifact.ts` downloads only a URL supplied by a reconciled provider
+transaction. It permits the exact signed query without exposing it in errors or
+mobile responses, validates/pins public DNS, preserves TLS hostname verification,
+sends no account credentials/cookies, refuses redirects/compression and bounds
+time and bytes. The existing paid EasyPost PDF route now uses this transport.
+The sender/mode/payment/approved-shipment checks still run before downloading.
+
+PDF and provider printing-code PNG are distinct typed responses. PDFs require a
+header and end marker. PNGs are decoded under pixel/byte limits and re-encoded
+losslessly to remove metadata without resizing or cropping. This validates bytes,
+not whether an arbitrary image is a valid printing QR: provider-issued semantics
+must come from the independently reconciled paid transaction. The Shippo paid
+worker integration is not yet implemented, so this component does not itself
+make a discovered-service QR available.
+
+Mobile keeps PDF sharing and printing-code display separate. A PNG printing code
+can be shown directly in a white, uncropped view on the phone and is removed from
+view when the app backgrounds or the exchange changes. PDF cache files use unique
+names and are deleted after sharing. No signed provider URL is sent to the device.
+Physical scanning and real provider artifact compatibility remain unverified.

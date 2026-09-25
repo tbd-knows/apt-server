@@ -6,6 +6,7 @@ import { AppError } from '../errors.js';
 import { conflict, requireRole } from './domain.js';
 import type { CommerceService } from './service.js';
 import type { EasyPostProvider } from './providers.js';
+import { downloadShippingArtifact } from './shipping-artifact.js';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 export async function sanitizePhoto(bytes: Buffer) {
@@ -73,12 +74,6 @@ export class CommerceAssets {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password
       || !/^(easypost-files\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com|[a-z0-9-]+\.easypost\.com)$/.test(parsed.hostname)) conflict('Label download host is not approved.');
-    const response = await fetch(url, { signal: AbortSignal.timeout(15_000), redirect: 'error' });
-    if (!response.ok || Number(response.headers.get('content-length') ?? 0) > MAX_BYTES || !response.body) conflict('Label download failed.');
-    const chunks: Buffer[] = []; let size = 0;
-    for await (const chunk of response.body) { size += chunk.byteLength; if (size > MAX_BYTES) conflict('Label is too large.'); chunks.push(Buffer.from(chunk)); }
-    const bytes = Buffer.concat(chunks);
-    if (bytes.subarray(0, 5).toString() !== '%PDF-') conflict('Provider artifact is not a printable PDF.');
-    return { mime: 'application/pdf', base64: bytes.toString('base64') };
+    return downloadShippingArtifact(url,'pdf');
   }
 }

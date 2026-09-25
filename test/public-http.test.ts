@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { downloadShippingArtifact } from '../src/commerce/shipping-artifact.js';
+import sharp from 'sharp';
 import { publicEndpointFetch } from '../src/commerce/public-http.js';
 
-const state=vi.hoisted(()=>({ips:['93.184.216.34'],port:0,ca:'',requests:0,pinned:[] as string[],status:200,body:'{"ok":true}',type:'application/json',encoding:''}));
+const state=vi.hoisted(()=>({ips:['93.184.216.34'],port:0,ca:'',requests:0,pinned:[] as string[],status:200,body:'{"ok":true}' as string|Buffer,path:'',type:'application/json',encoding:''}));
 vi.mock('node:dns/promises',()=>({lookup:vi.fn(async()=>state.ips.map(address=>({address,family:4})))}));
 vi.mock('node:https',async importOriginal=>{
   const actual=await importOriginal<typeof import('node:https')>();
@@ -32,6 +34,7 @@ beforeAll(async()=>{
   execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=mcp.vendor.com'],{stdio:'ignore'});
   state.ca=readFileSync(cert,'utf8');
   server=createServer({key:readFileSync(key),cert:state.ca},(req,res)=>{
+    state.path=req.url ?? '';
     expect(req.headers.cookie).toBeUndefined();
     expect(req.headers.authorization).toBeUndefined();
     res.writeHead(state.status,{'content-type':state.type,'location':'https://127.0.0.1/private',...(state.encoding?{'content-encoding':state.encoding}:{})});
@@ -75,5 +78,35 @@ describe('bounded public HTTPS transport',()=>{
     await expect(fetch()('https://mcp.vendor.com/mcp',post)).rejects.toThrow();
     state.type='application/json';state.encoding='gzip';
     await expect(fetch()('https://mcp.vendor.com/mcp',post)).rejects.toThrow();
+  });
+});
+
+
+describe('private postage downloads',()=>{
+  const url='https://mcp.vendor.com/postage.pdf?signature=PRIVATE_SIGNED_CANARY';
+  it('pins public DNS and preserves the exact signed URL without ambient authentication',async()=>{
+    state.type='application/pdf';state.body='%PDF-1.7\nfixture\n%%EOF';
+    const result=await downloadShippingArtifact(url,'pdf');
+    expect(result.artifact).toBe('pdf');expect(state.path).toBe('/postage.pdf?signature=PRIVATE_SIGNED_CANARY');
+    expect(state.pinned).toEqual(['93.184.216.34']);expect(JSON.stringify(result)).not.toContain('PRIVATE_SIGNED_CANARY');
+  });
+  it('rejects private/mixed DNS, unsafe URLs and redirects without disclosing signed URLs in errors',async()=>{
+    state.ips=['93.184.216.34','127.0.0.1'];
+    await expect(downloadShippingArtifact(url,'pdf')).rejects.toThrow('could not be retrieved');expect(state.requests).toBe(0);
+    state.ips=['93.184.216.34'];
+    for(const invalid of ['https://127.0.0.1/x','http://mcp.vendor.com/x','https://user:password@mcp.vendor.com/x',url+'#fragment']) {
+      await expect(downloadShippingArtifact(invalid,'pdf')).rejects.toThrow('could not be retrieved');
+    }
+    expect(state.requests).toBe(0);state.status=302;
+    await expect(downloadShippingArtifact(url,'pdf')).rejects.toThrow('could not be retrieved');expect(state.requests).toBe(1);
+  });
+  it('rejects mislabeled, compressed or oversized downloads and never substitutes PDF for printing QR',async()=>{
+    state.type='application/pdf';state.body='%PDF-1.7\nfixture\n%%EOF';
+    await expect(downloadShippingArtifact(url,'label_qr')).rejects.toThrow();
+    state.encoding='gzip';await expect(downloadShippingArtifact(url,'pdf')).rejects.toThrow();state.encoding='';
+    state.body='x'.repeat(5*1024*1024+1);await expect(downloadShippingArtifact(url,'pdf')).rejects.toThrow();
+    state.type='image/png';state.body=await sharp({create:{width:48,height:48,channels:3,background:'white'}}).png().toBuffer();
+    const image=await downloadShippingArtifact(url,'label_qr');expect(image).toMatchObject({artifact:'label_qr',mime:'image/png',width:48,height:48});
+    // Fixture only verifies PNG transport. It is deliberately not proof of an issued QR.
   });
 });
