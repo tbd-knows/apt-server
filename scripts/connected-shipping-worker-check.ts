@@ -201,6 +201,7 @@ export async function checkConnectedWorker(repository:CommerceRepository,origina
     assert.equal(refunds,1);assert.equal((await op(refundId)).result?.transactionId,'transaction_fixture');
     assert.equal((await op(refundId)).result?.refundStatus,'submitted');refundStatus='SUCCESS';await run(refundId);
     assert.equal((await op(refundId)).result?.refundStatus,'refunded');assert.equal((await current()).payment,'refunded');
+    refundStatus='PENDING';await run(refundId);assert.equal((await op(refundId)).result?.refundStatus,'refunded');
     // An interrupted refund can settle from the original transaction status.
     await reset();await run();const refunded=await current();refunded.payment='refunded';refunded.cancellationRequested=true;await save(refunded);
     await insert(refundId,'label_refund');loseRefund=true;await run(refundId);await run(refundId);assert.equal(refunds,1);

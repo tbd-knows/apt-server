@@ -396,7 +396,7 @@ export class CommerceWorker {
     await this.done(op, result.id, { status: result.status });
   }
   private async labelRefund(op: Operation, e: Exchange) {
-    if (op.result?.costAccepted === true) return;
+    if (op.result?.costAccepted === true || op.result?.refundStatus === 'refunded') return;
     const offer=e.offers.find(o=>o.version===op.version);
     if(!offer) conflict('Missing postage offer.');
     if(offer.connectedShipping) {
