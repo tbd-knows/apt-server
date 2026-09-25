@@ -450,13 +450,11 @@ a new version and invalidates approvals. Full refund/reversal verification
 requires reversing the reimbursement too, while a carrier postage refund remains
 separate. Mobile shows the exact breakdown and these consequences to either role.
 
-This is financial-contract integration, not completed connected fulfillment.
-There is no exposed model/client action that can invent a shipping offer or set
-its funding. The legacy platform-account worker rejects seller-funded Checkout
-creation and label operations rather than paying the same postage twice.
-Remaining work includes publishing a verified connected offer, dispatching its
-paid label action, reconciling it, and integrating artifact/tracking/refund/return
-operations. A selected rate alone does not authorize any of those actions.
+No exposed model/client action can invent an offer or set its funding. The legacy
+platform-account worker refuses these offers rather than paying the postage twice.
+The separate connected worker now handles the exact offer, approved label purchase,
+private artifact, tracking and unused-postage refund. Connected reverse shipments
+remain incomplete. A selected rate alone never authorizes any paid action.
 
 ## Verifying an observed public drop-off location
 
@@ -540,17 +538,21 @@ by the fresh location/rate/disclosure evidence. Checkout requires more than 36
 minutes left for a connected offer and ends five minutes before the offer deadline,
 leaving a margin for payment reconciliation and postage. These limits never extend
 the provider's rate age or establish that a stale price is still valid; canonical
-prepayment and prepurchase revalidation remain part of the pending paid driver.
+prepayment and prepurchase revalidation now run in the connected worker.
 
 Sources: [Shippo transaction API](https://docs.goshippo.com/shippoapi/public-api/transactions/createtransaction)
 and [Stripe Checkout expiry](https://docs.stripe.com/api/checkout/sessions/create).
 
-The server explicitly refuses a connected Checkout command before collecting any
-money while connected postage execution is unavailable. Test-mode payment also
-cannot fund live service postage. Agent prerequisites include
-`connected_shipping_execution`; mobile shows the offer review and unavailable
-payment state. This is completed offer preparation/publication, not completed paid
-fulfillment. The legacy platform-account adapter cannot execute these offers.
+The connected worker now admits Checkout only after matching live mode, exact
+human approvals and the current connection's observed lifecycle descriptions.
+Mobile and agent readiness reflect these prerequisites. It buys postage once after
+canonical Stripe payment and seller transfer, saves the provider reference before
+artifact parsing, polls bound tracking, and reconciles unused-label refunds.
+Uncertain outcomes never repeat a purchase; seller-entered recovery references
+require canonical validation. See [worker and recovery details](pilot-commerce.md#connected-paid-worker-and-recovery-september-25).
+The legacy platform-account adapter cannot execute these offers or their returns.
+Connected reverse shipments and broader supported no-printer/carrier paths remain
+engineering work; actual account compatibility and live acceptance are unverified.
 
 Real PostgreSQL tests cover actual private preparation through the agent surface,
 exact durable sharing and replay, seller-only access, revision and connection

@@ -7,13 +7,15 @@ import { decimalMinor, EasyPostProvider, ProviderFailure, StripeProvider, type P
 import { FedExLocations } from './locations.js';
 import { recoverConnections } from './connections.js';
 import { recoverServiceActions } from './service-actions.js';
+import type { ConnectedShipping } from './connected-shipping.js';
+import type { shippoTracking, ShippoTransactionEvidence } from './shippo-evidence.js';
 
 function operation(row: Record<string, unknown>): Operation {
   return { id: String(row.id), exchangeId: String(row.exchange_id), kind: row.kind as Operation['kind'], version: Number(row.version), mode: row.mode as Operation['mode'],
     state: row.state as Operation['state'], attempts: Number(row.attempts), providerId: row.provider_id as string | null,
     result: row.result as Operation['result'], createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() };
 }
-export interface CommerceProviders { stripe: StripeProvider; shipping: EasyPostProvider; locations: FedExLocations }
+export interface CommerceProviders { stripe: StripeProvider; shipping: EasyPostProvider; locations: FedExLocations; connectedShipping?: ConnectedShipping }
 export class CommerceWorker {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopping = false;
@@ -78,7 +80,7 @@ export class CommerceWorker {
       const uncertain = error instanceof ProviderFailure && error.uncertain;
       const exhausted = op.attempts >= 4;
       // Don't demote a successful financial operation due to a polling outage.
-      if (op.state !== 'succeeded') await this.repository.pool.query(`update pilot_operations set state=$2,updated_at=now() where id=$1`,
+      if (op.state !== 'succeeded') await this.repository.pool.query(`update pilot_operations set state=$2,updated_at=now() where id=$1 and state<>'succeeded'`,
         [op.id, uncertain && !exhausted ? 'uncertain' : 'failed']);
       await this.repository.transaction(async sql => {
         const r = await sql.query<{ data: Exchange }>('select data from pilot_exchanges where id=$1 for update', [op.exchangeId]);
@@ -97,8 +99,8 @@ export class CommerceWorker {
   }
   async done(op: Operation, providerId: string | null, result: unknown) {
     await this.repository.transaction(async sql => {
-      await sql.query("update pilot_operations set state='succeeded',provider_id=$2,result=$3,updated_at=now() where id=$1", [op.id, providerId, result]);
       const row = await sql.query<{ data: Exchange }>('select data from pilot_exchanges where id=$1 for update', [op.exchangeId]);
+      await sql.query("update pilot_operations set state='succeeded',provider_id=$2,result=coalesce(result,'{}'::jsonb)||$3::jsonb,updated_at=now() where id=$1", [op.id, providerId, result]);
       const e = row.rows[0]?.data;
       if (e?.operationIssues?.[op.id]) {
         delete e.operationIssues[op.id]; reconciledStage(e);
@@ -150,6 +152,13 @@ export class CommerceWorker {
       throw new AppError('PROVIDER_NOT_READY', 'Seller-funded postage requires the connected shipping execution path before checkout or fulfillment.');
     }
   }
+  private connected(e:Exchange) {
+    const provider=this.providers.connectedShipping;
+    if(!provider || e.mode!=='live' || this.providers.stripe.config.mode!==e.mode) {
+      throw new AppError('PROVIDER_NOT_READY','Connected postage requires its shipping driver and matching live Stripe mode.');
+    }
+    return provider;
+  }
   private async checkout(op: Operation, e: Exchange) {
     if (op.result?.cancelledBeforeCreation === true) return;
     const offer = e.offers.find(o => o.version === op.version);
@@ -162,9 +171,21 @@ export class CommerceWorker {
         await this.cancelUnpaid(e); await this.done(op, null, { cancelledBeforeCreation: true }); return;
       }
       if (e.approvals.length !== 2 || e.approvals.some(a => a.digest !== digest(offer))) conflict('Checkout approvals are invalid.');
-      this.requirePlatformShipping(offer);
-      const shipment = await this.providers.shipping.retrieve(offer.quote.shipmentId);
-      this.providers.shipping.validateApproved(shipment, offer.quote);
+      if(offer.connectedShipping) {
+        await this.connected(e).requireLifecycle(e,offer);
+        await this.connected(e).preflight(e,offer);
+        // The free preflight spans network calls. Re-read cancellation and the
+        // approved offer before creating an idempotent hosted payment session.
+        const current=await this.repository.get(e.id,e.buyerId);
+        if(current.cancellationRequested && !op.result?.effectStarted) {await this.cancelUnpaid(current);await this.done(op,null,{cancelledBeforeCreation:true});return;}
+        if(current.offers.at(-1)?.version!==offer.version || current.approvals.length!==2
+          || current.approvals.some(a=>a.digest!==digest(offer))) conflict('Checkout approvals changed during shipping validation.');
+      } else {
+        this.requirePlatformShipping(offer);
+        const shipment = await this.providers.shipping.retrieve(offer.quote.shipmentId);
+        this.providers.shipping.validateApproved(shipment, offer.quote);
+      }
+      await this.effectStarted(op);
       fact = await this.providers.stripe.checkout(e, offer, op.id);
     }
     await this.applyPayment(op, fact);
@@ -214,6 +235,7 @@ export class CommerceWorker {
   private async label(op: Operation, e: Exchange) {
     const offer = e.offers.find(o => o.version === op.version);
     if (!offer) conflict('Missing offer.');
+    if(offer.connectedShipping) {await this.connectedLabel(op,e,offer);return;}
     this.requirePlatformShipping(offer);
     let shipment = await this.providers.shipping.retrieve(offer.quote.shipmentId);
     this.providers.shipping.validateApproved(shipment, offer.quote);
@@ -229,6 +251,59 @@ export class CommerceWorker {
     if (!shipment.postage_label?.label_pdf_url) throw new ProviderFailure(true, 'Paid label has no usable PDF yet.');
     await this.applyShipment(e.id, shipment);
     await this.done(op, shipment.id, { labelId: shipment.postage_label.id, trackerId: shipment.tracker?.id ?? null });
+  }
+  private async connectedLabel(op:Operation,e:Exchange,offer:Offer) {
+    if(op.result?.cancelledNoLabel===true) return;
+    if(!op.providerId && !op.result?.effectStarted && e.payment==='refunded') {
+      await this.done(op,null,{cancelledNoLabel:true});return;
+    }
+    const provider=this.connected(e);
+    const purchased=await provider.purchase(e,offer,op,async()=>{
+      const payment=await this.paymentOperation(e);
+      if(!payment.providerId || payment.version!==offer.version) conflict('Reconcile the matching payment before purchasing postage.');
+      const fact=await this.providers.stripe.retrieve(payment.providerId,e,offer,payment.id);
+      await this.applyPayment(payment,fact);
+      if(fact.status!=='paid' || !fact.transferred || fact.amount!==offer.buyerTotal || fact.currency.toUpperCase()!==offer.currency
+        || fact.refunded || fact.refundedAmount!==0 || fact.transferReversed || fact.transferReversedAmount!==0) {
+        conflict('Postage requires a full canonical Stripe payment without a refund or reversal.');
+      }
+    });
+    if(purchased.state==='pending') throw new ProviderFailure(true,'The original postage transaction is pending. Reconcile it without buying another label.');
+    if(purchased.state==='error') conflict('The original postage purchase failed. Resolve or refund the order before any new purchase.');
+    if(purchased.state!=='purchased') {
+      if(e.payment!=='refunded') conflict('Postage has been refunded or submitted for refund. Resolve the paid order.');
+      await this.done(op,purchased.transactionId,{postageState:purchased.state});return;
+    }
+    // Record usable postage before a separate tracking outage can occur.
+    await this.applyConnectedShipment(e.id,offer,purchased);
+    await this.done(op,purchased.transactionId,{labelId:purchased.transactionId,postageState:'purchased'});
+    const tracking=await provider.tracking(e,offer,op.id,purchased.transactionId);
+    await this.applyConnectedShipment(e.id,offer,purchased,tracking);
+  }
+  private async applyConnectedShipment(id:string,offer:Offer,shipment:Extract<ShippoTransactionEvidence,{state:'purchased'}>,tracking?:ReturnType<typeof shippoTracking>) {
+    await this.repository.transaction(async sql=>{
+      const row=await sql.query<{data:Exchange}>('select data from pilot_exchanges where id=$1 for update',[id]);
+      const e=row.rows[0]!.data,before=stableJson(e);
+      if(digest(currentOffer(e))!==digest(offer)) conflict('The shipment does not match the current offer.');
+      if(['none','label_pending'].includes(e.shipping)) e.shipping='label_ready';
+      const fresh=tracking?.updatedAt && (!e.trackingUpdatedAt || Date.parse(tracking.updatedAt)>=Date.parse(e.trackingUpdatedAt));
+      if(fresh) {
+        e.trackingUpdatedAt=tracking.updatedAt;
+        if(['in_transit','delivered','exception'].includes(tracking.state) && !e.carrierAcceptedAt) e.carrierAcceptedAt=tracking.occurredAt;
+        if(tracking.state==='delivered') e.shipping='delivered';
+        else if(e.shipping!=='delivered' && tracking.state==='in_transit') e.shipping='in_transit';
+        else if(e.shipping!=='delivered' && tracking.state==='exception') {
+          e.shipping='exception';e.problem='Carrier exception requires a founder decision.';
+        }
+      }
+      if(e.payment==='refunded' && !e.sellerDroppedAt && !e.carrierAcceptedAt && e.shipping==='label_ready') {
+        await this.repository.enqueue(sql,e,'label_refund',offer.version);
+      }
+      reconciledStage(e);
+      if(stableJson(e)!==before) {await this.repository.save(sql,e,new Date());await this.repository.notifyStatus(sql,e);}
+      await this.repository.event(sql,e,null,'tracking_reconciled',{transactionId:shipment.transactionId,status:e.shipping,providerUpdatedAt:tracking?.updatedAt},
+        `shippo:${e.mode}:${shipment.transactionId}:${tracking?.eventId ?? 'label'}:${tracking?.updatedAt ?? 'label'}:${e.shipping}`);
+    });
   }
   async applyShipment(id: string, shipment: Shipment) {
     await this.repository.transaction(async sql => {
@@ -322,6 +397,18 @@ export class CommerceWorker {
   }
   private async labelRefund(op: Operation, e: Exchange) {
     if (op.result?.costAccepted === true) return;
+    const offer=e.offers.find(o=>o.version===op.version);
+    if(!offer) conflict('Missing postage offer.');
+    if(offer.connectedShipping) {
+      const rows=await this.repository.pool.query("select * from pilot_operations where exchange_id=$1 and mode=$2 and kind='label' and version=$3",[e.id,e.mode,op.version]);
+      if(!rows.rows[0]) conflict('The original postage operation is missing.');
+      const result=await this.connected(e).requestRefund(e,offer,op,operation(rows.rows[0]));
+      // Preserve the transaction binding and dispatch fence through polling.
+      const refundStatus=result.state==='refunded'?'refunded':result.state==='rejected'?'rejected':'submitted';
+      await this.repository.pool.query("update pilot_operations set result=coalesce(result,'{}'::jsonb)||jsonb_build_object('refundStatus',$2::text) where id=$1",[op.id,refundStatus]);
+      if(result.state==='rejected') conflict('The carrier rejected the unused-label refund. Both founders can record acceptance of the postage cost separately from the buyer refund.');
+      await this.done(op,result.refundId,{refundStatus});return;
+    }
     this.requirePlatformShipping(currentOffer(e));
     const id = currentOffer(e).quote.shipmentId;
     const shipment = await this.providers.shipping.retrieve(id);
@@ -359,6 +446,7 @@ export class CommerceWorker {
     await this.repository.pool.query("update pilot_operations set result=coalesce(result,'{}'::jsonb)||'{\"effectStarted\":true}'::jsonb where id=$1", [op.id]);
   }
   private async returnQuote(op: Operation, e: Exchange) {
+    this.requirePlatformShipping(currentOffer(e));
     const plan = e.returnPlan;
     if (plan?.quote?.shipmentId === op.providerId) { await this.done(op, op.providerId, { returnVersion: plan.version }); return; }
     if (!plan || plan.shipping !== 'none') conflict('Return inputs changed. Request a fresh quote.');
@@ -400,6 +488,7 @@ export class CommerceWorker {
     await this.repository.pool.query("update pilot_operations set result=coalesce(result,'{}'::jsonb)||jsonb_build_object('inputHash',$2::text) where id=$1", [op.id, hash]);
   }
   private async returnLabel(op: Operation, e: Exchange) {
+    this.requirePlatformShipping(currentOffer(e));
     const plan = e.returnPlan;
     if (!plan?.quote || plan.version !== op.version || plan.resolutionId !== e.resolution?.id || plan.approvals.length !== 2) conflict('Return postage approvals changed.');
     let shipment = await this.providers.shipping.retrieve(plan.quote.shipmentId);

@@ -1,3 +1,4 @@
+import { checkConnectedWorker } from './connected-shipping-worker-check.js';
 import { ConnectedShippingRead } from '../src/commerce/connected-shipping-read.js';
 import { digest } from '../src/commerce/domain.js';
 import { requireConnectedOffer } from '../src/commerce/connected-offer.js';
@@ -427,6 +428,7 @@ try {
   await assert.rejects(reader.preflight(liveExchange,offer),/account, item or private/);
   await pool.query('update pilot_connections set generation=$2 where id=$1',[connection,generation]);
   await pool.query('update pilot_service_actions set generation=$2 where connection_id=$1',[connection,generation]);
+  await checkConnectedWorker(repository,liveExchange,connection,root,[read,write],describe);
   // Expire this synthetic offer and update its matching private digest: expiry
   // prohibits spend preflight while canonical known-transaction reads remain.
   offer.expiresAt='2026-01-01T00:00:00Z';

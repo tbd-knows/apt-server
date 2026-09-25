@@ -14,7 +14,7 @@ import { FedExLocations } from './commerce/locations.js';
 import { CommerceWorker } from './commerce/worker.js';
 import { CommerceAssets } from './commerce/assets.js';
 import { commerceWebhooks } from './commerce/webhooks.js';
-import { ConnectedShippingRead } from './commerce/connected-shipping-read.js';
+import { ConnectedShipping } from './commerce/connected-shipping.js';
 
 const config = loadConfig();
 const repository = PostgresChatRepository.create(config.supabase.databaseUrl, config.supabase.databaseSsl);
@@ -22,9 +22,9 @@ const auth = SupabaseAuthService.create(config.supabase.url, config.supabase.pub
 const memoryRepository = PostgresMemoryRepository.create(config.supabase.databaseUrl, config.supabase.databaseSsl);
 const commerceRepository = CommerceRepository.create(config.supabase.databaseUrl, config.supabase.databaseSsl);
 const providersConfig = providerConfig(process.env, config.commerceMode);
-const commerceService = new CommerceService(commerceRepository, config.pilotUserIds, config.commerceMode,undefined,providersConfig);
-const providers = { stripe: new StripeProvider(providersConfig), shipping: new EasyPostProvider(providersConfig), locations: new FedExLocations(providersConfig) };
-const connectedShipping = new ConnectedShippingRead(commerceService,config.hermes.keySecret);
+const commerceService = new CommerceService(commerceRepository, config.pilotUserIds, config.commerceMode,undefined,providersConfig,true);
+const connectedShipping = new ConnectedShipping(commerceService,config.hermes.keySecret);
+const providers = { stripe: new StripeProvider(providersConfig), shipping: new EasyPostProvider(providersConfig), locations: new FedExLocations(providersConfig), connectedShipping };
 const commerceAssets = new CommerceAssets(commerceService, config.supabase.url, config.supabase.serviceRoleKey, process.env.APT_PHOTO_BUCKET ?? 'pilot-photos', providers.shipping,connectedShipping);
 const memoryService = new MemoryService(memoryRepository, undefined, commerceService);
 const runtime = new MemoryAgentRuntime(

@@ -251,7 +251,7 @@ export const humanCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('decide_mcp_inspection'), researchId: z.uuid(), inspectionDigest: z.string().length(64), approve: z.boolean() }).strict(),
   z.object({ type: z.literal('approve_agent_action'), actionId: z.uuid(), actionDigest: z.string().length(64) }).strict(),
   z.object({ type: z.literal('dismiss_agent_action'), actionId: z.uuid() }).strict(),
-  z.object({ type: z.literal('attach_provider_reference'), operationId: z.uuid(), providerId: z.string().regex(/^(shp_|cs_)[A-Za-z0-9_]+$/), reason: shortText }).strict(),
+  z.object({ type: z.literal('attach_provider_reference'), operationId: z.uuid(), providerId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/), reason: shortText }).strict(),
   z.object({ type: z.literal('propose_resolution'), remedy: z.enum(['resume','refund','return','absorb_postage']), reason: shortText }).strict(),
   z.object({ type: z.literal('approve_resolution'), binding: z.unknown() }).strict(),
   z.object({ type: z.literal('return_packing'), packing: packingSchema }).strict(),

@@ -20,14 +20,15 @@ address validation now uses that consent, a separately reviewed action and the
 actual MCP SDK; response corrections stay in the affected owner's private form.
 Free rate creation and pending-shipment retrieval now run through the same
 approved SDK harness, returning private-data-minimized carrier/price options.
-Authenticated production schema compatibility remains unverified. Rate selection,
-paid labels and purchased-artifact integration into the fulfillment worker remain
-incomplete. Hosted-service rates are explicitly live-provider evidence even when
+Authenticated production schema compatibility remains unverified. Exact connected
+offers, once-only paid label dispatch, private artifacts, tracking, and unused-postage
+refunds are now integrated into the worker and exercised with SDK/Postgres fixtures.
+Connected returns and additional carrier/no-printer paths remain incomplete. Hosted-service rates are explicitly live-provider evidence even when
 the surrounding commerce exchange is in test mode.
 The founder selected seller-paid postage with Stripe reimbursement. Saved offer
 funding, exact approval disclosures, Stripe transfer/reversal and payout amounts
-now support it. Execution of discovered fulfillment remains incomplete; the
-legacy platform-funded adapter refuses seller-funded checkout and postage.
+now support it. The connected worker uses the seller account for approved postage;
+the legacy platform-funded adapter refuses seller-funded checkout and postage.
 See [service discovery and connections](agent-service-research.md). No founder
 provider credentials are configured, and no sandbox payment,
 real postage purchase, live migration or live transaction has been verified.
@@ -100,7 +101,7 @@ Founders must confirm location, eligibility and tax treatment before live mode.
   The optional existing EasyPost path still pays postage from the platform and
   explicitly publishes platform-funded offers. Its worker rejects seller-funded
   offers before creating Checkout or buying postage, so it cannot double-fund a
-  shipment while connected-service execution is being integrated.
+  shipment. Connected offers use the separate seller-account worker.
 - [EasyPost shipments](https://docs.easypost.com/docs/shipments) for verified
   addresses, actual package rates, paid labels and tracking. Reconcile a known
   shipment after an uncertain buy; do not create another shipment to retry it.
@@ -321,8 +322,9 @@ treatment, printing, drop-off and deadlines before explicitly sharing the offer.
 Both founders must separately approve its exact terms and connected-service
 permission. Service account credentials and identity are not shared with the buyer
 or model. Stale draft/connection/form evidence is rejected. Test-mode payments cannot
-fund live postage. Payment is explicitly unavailable for connected offers until the
-paid connected shipping driver is complete; no fallback platform postage is used.
+fund live postage. Payment is available only when the connected worker is installed
+and the current service connection has verified descriptions for its complete
+outbound lifecycle. No fallback platform postage is used.
 
 
 ### Real test accounts and connected shipping reads (September 25)
@@ -371,7 +373,65 @@ The PostgreSQL shipping suite exercises these reads through the actual MCP SDK
 with synthetic transport responses, including price/account mismatch,
 revocation before and during a read, fresh-generation description requirements,
 expiry, transaction/refund identity and private-output checks. No real postage
-was purchased. Connected purchase dispatch, worker lifecycle integration and
-returns remain incomplete, and the payment gate remains closed. Two test
-accounts do not remove the remaining live-model, Stripe, service authorization,
+was purchased. The worker integration described below replaces the earlier blanket
+payment gate with capability and payment checks. Connected returns remain incomplete.
+Two test accounts do not remove the remaining live-model, Stripe, service authorization,
 device, physical delivery, review and merge requirements.
+
+
+### Connected paid worker and recovery (September 25)
+
+The production server now wires `ConnectedShipping` into both the private artifact
+endpoint and `CommerceWorker`. Before creating Checkout, human admission requires
+live commerce, the original connected-offer authorization and actual current-generation
+operation descriptions for GetRate/GetCarrierAccount/CreateTransaction/GetTransaction/
+GetTrack/CreateRefund/GetRefund. Missing descriptions leave mobile payment disabled.
+The worker revalidates rate, amount, service and carrier; no EasyPost/FedEx credentials
+are used by this route. Test Stripe cannot fund a live hosted-service label.
+
+Immediately before the one MCP purchase dispatch, the worker retrieves canonical
+Stripe payment and seller transfer, rejects missing/partial/refunded/reversed funds,
+and rechecks cancellation, both complete approvals, expiry, account generation and
+private input versions. It durably records `effectStarted` under the exchange lock
+before any purchase request. A known transaction is retrieved on restart; an unknown
+outcome never permits a second CreateTransaction. The canonical transaction ID is
+saved before parsing the PDF/QR so a malformed artifact cannot erase the purchase.
+Cancellation or revocation racing a successful response does not discard that ID.
+
+Purchased postage is saved before tracking polling. Tracking outages leave it
+purchased; stale/pre-transit events cannot regress transit or delivery. Carrier
+acceptance, seller drop-off, delivery and buyer receipt remain separate. Polling is
+limited to the tracking number from this account's verified purchased transaction.
+[Shippo's hosted MCP documentation](https://docs.goshippo.com/guides/mcp-server#live-account-and-charges)
+identifies this tracking as free and externally purchased tracking as billable; the
+latter is not admitted by this worker.
+
+Unused-label refunds require a confirmed Stripe refund, no reported/observed handoff,
+and canonical pre-transit evidence. A durable submission fence and transaction binding
+survive successful polling and restarts. Pending, rejected and refunded postage stay
+separate from buyer funds. An interrupted submission can reconcile from the original
+transaction status or a verified refund ID, without another CreateRefund.
+
+For a lost provider response, only the seller can enter the original transaction or
+refund reference in the app's resolution card. It remains an unverified candidate
+until the canonical account/mode/rate/operation or transaction binding matches. An
+incorrect candidate can be corrected; a verified reference cannot be replaced. This
+action never authorizes another purchase/refund. Routine projections exclude tokens,
+account identities, addresses and signed artifacts.
+
+`test:shipping-rates-db` also runs `connected-shipping-worker-check.ts` against the
+same privately prepared and approved disposable fixture. It covers human checkout
+admission and capability refusal, payment-to-label execution, concurrent workers,
+restarts, payment/approval/revocation races, pending/malformed/unknown outcomes,
+human reference correction and ownership denial, cancellation after dispatch,
+tracking outage/order/delivery/receipt, refund pending/success/unknown recovery and
+carrier-handoff denial. Provider responses remain synthetic; this is not a live
+purchase or authenticated hosted-account compatibility claim.
+
+Connected returns deliberately cannot fall through to the old platform-funded
+return adapter. Implement the connected reverse-shipment and separately approved
+funding path before enabling those returns. Other remaining engineering includes
+broader supported carrier/drop-off/no-printer paths, account-lifetime recovery,
+full positive model-driven acceptance and persistent deployment. Founder-controlled
+service authorization, Stripe onboarding/credentials, real payments, phones,
+physical handoff/delivery and review/merge remain distinct acceptance steps.

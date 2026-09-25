@@ -19,11 +19,12 @@ import { prepareShippingOption,shippingOptionSchema } from './shipping-option.js
 import { prepareShippingRates,shippingRatesSchema } from './shipping-rates.js';
 import { verifyDropoff,verifyDropoffSchema,verifiedDropoffView } from './verified-dropoff.js';
 import { prepareConnectedOffer,connectedOfferSchema,connectedOfferDraftView,shareConnectedOffer,requireConnectedOffer,type OfferEconomics } from './connected-offer.js';
+import { requireConnectedShippingLifecycle } from './connected-shipping-read.js';
 
 export class CommerceService {
   get research() { return new CommerceResearch(this); }
   constructor(readonly repository: CommerceRepository, readonly founders: readonly string[], readonly mode: Mode,
-    private readonly now: () => Date = () => new Date(),readonly offerEconomics:OfferEconomics|null=null) {
+    private readonly now: () => Date = () => new Date(),readonly offerEconomics:OfferEconomics|null=null,readonly connectedShippingEnabled=false) {
     if (founders.length !== 2 || new Set(founders).size !== 2 || founders.some(id => !z.uuid().safeParse(id).success)) {
       throw new Error('Configure exactly two distinct Auth UUIDs.');
     }
@@ -45,19 +46,33 @@ export class CommerceService {
       "select result from pilot_operations where exchange_id=$1 and kind='checkout' and state='succeeded' order by version desc limit 1", [id]);
     const checkoutUrl = execution.rows[0]?.result?.checkoutUrl ?? null;
     const operations = (await this.repository.pool.query(`select id,kind,state,attempts,provider_id as "providerId",
+      version,result->>'effectStarted' as "effectStarted",result->>'referenceUnverified' as "referenceUnverified",
       case when kind='label_refund' then result->>'refundStatus' else null end as "labelRefundStatus"
-      from pilot_operations where exchange_id=$1 order by created_at`, [id])).rows;
+      from pilot_operations where exchange_id=$1 order by created_at`, [id])).rows.map(({version,effectStarted,referenceUnverified,...operation})=>({
+        ...operation,providerReferenceEditable:actor===e.sellerId && ['failed','uncertain'].includes(operation.state)
+          && ['label','label_refund'].includes(operation.kind) && effectStarted==='true'
+          && (!operation.providerId || referenceUnverified==='true') && !!e.offers.find(o=>o.version===version)?.connectedShipping,
+      }));
     const {verifiedDropoff:_internalDropoff,connectedShipping:_internalShipping,connectedOfferDraft,...privateInput}=await this.repository.privateInput(e,actor);
     const verifiedDropoff=await verifiedDropoffView(this,actor,id);
+    const connectedShippingReady=await this.connectedReadiness(e);
     return { ...view, requestDigest: digest(e.request), privateInput,
       verifiedDropoff,
       connectedOfferDraft:connectedOfferDraftView(connectedOfferDraft,e.revision,this.now(),verifiedDropoff?.state==='current' && verifiedDropoff.id===connectedOfferDraft?.shipping.dropoffId),
       shippingData: await shippingDataView(this,e,actor,this.now()),
       operations, deliveries: await this.deliveries(actor, id), research: await this.research.list(actor,id),connections:await listConnections(this,actor,id),serviceActions:await listServiceActions(this,actor,id),
-      execution: { connectedShippingReady:false,
+      execution: { connectedShippingReady,
         checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
         returnLabelAvailable: actor === e.buyerId && !!e.returnPlan && ['label_ready','in_transit','delivered'].includes(e.returnPlan.shipping),
         labelAvailable: actor === e.sellerId && e.payment === 'paid' && !e.cancellationRequested && ['label_ready','in_transit','delivered'].includes(e.shipping) } };
+  }
+  private async connectedReadiness(e:Exchange) {
+    if(!this.connectedShippingEnabled || e.mode!=='live') return false;
+    if(e.offers.at(-1)?.connectedShipping && e.payment==='unpaid') {
+      try {await this.repository.transaction(sql=>requireConnectedShippingLifecycle(this,sql,e,currentOffer(e)));}
+      catch(error) {if(!(error instanceof AppError)) throw error;return false;}
+    }
+    return true;
   }
   async create(actor: string, key: string, raw: unknown) {
     this.authorize(actor);
@@ -232,7 +247,10 @@ export class CommerceService {
           const offer = currentOffer(e);
           if(offer.connectedShipping && e.mode!==offer.connectedShipping.providerMode) conflict('Live postage cannot be purchased using test-mode payment.');
           if(offer.connectedShipping) await requireConnectedOffer(this,sql,e,offer);
-          if(offer.connectedShipping) throw new AppError('PROVIDER_NOT_READY','Connected postage execution must be available before payment can begin.');
+          if(offer.connectedShipping) {
+            if(!this.connectedShippingEnabled) throw new AppError('PROVIDER_NOT_READY','Connected postage execution must be available before payment can begin.');
+            await requireConnectedShippingLifecycle(this,sql,e,offer);
+          }
           if (e.stage !== 'offered' || e.approvals.length !== 2 || e.approvals.some(a => a.digest !== digest(offer))) conflict('Both people must approve the current offer.');
           if (Date.parse(offer.expiresAt) <= now.getTime() + (offer.connectedShipping?36:31) * 60_000) conflict('The quote is too close to expiry. Refresh the offer before checkout.');
           const buyer = await this.repository.privateInput(e, actor, sql);
@@ -281,8 +299,17 @@ export class CommerceService {
           const op = row.rows[0];
           if (!op || !['failed','uncertain'].includes(op.state)) conflict('Only an operation needing attention can be reconciled.');
           if (command.type === 'attach_provider_reference') {
-            if (!['quote','return_quote','checkout'].includes(op.kind) || op.provider_id || !command.providerId.startsWith(op.kind === 'checkout' ? 'cs_' : 'shp_')) conflict('This operation cannot accept that provider reference.');
-            await sql.query('update pilot_operations set provider_id=$2 where id=$1', [op.id, command.providerId]);
+            const connected=['label','label_refund'].includes(op.kind) && e.offers.find(o=>o.version===op.version)?.connectedShipping;
+            if(connected) {
+              requireRole(e,actor,'seller');
+              if(!op.result?.effectStarted || (op.provider_id && op.result?.referenceUnverified!==true)) conflict('Only an unknown postage operation can accept an unverified reference.');
+              // A human-supplied ID is only a candidate. Canonical provider
+              // evidence must match before the worker establishes any facts.
+              await sql.query("update pilot_operations set provider_id=$2,result=coalesce(result,'{}'::jsonb)||'{\"referenceUnverified\":true}'::jsonb where id=$1",[op.id,command.providerId]);
+            } else {
+              if (!['quote','return_quote','checkout'].includes(op.kind) || op.provider_id || !command.providerId.startsWith(op.kind === 'checkout' ? 'cs_' : 'shp_')) conflict('This operation cannot accept that provider reference.');
+              await sql.query('update pilot_operations set provider_id=$2 where id=$1', [op.id, command.providerId]);
+            }
           }
           // Preserve effectStarted and the attempt history. A human retry opens only
           // one more reconciliation attempt, never a fresh uncertain label purchase.
@@ -495,7 +522,8 @@ export class CommerceService {
         const [buyer, seller] = await Promise.all([this.repository.privateInput(e, e.buyerId), this.repository.privateInput(e, e.sellerId)]);
         const serviceActions=await listServiceActions(this,actor,e.id);
         const verifiedDropoff=await verifiedDropoffView(this,actor,e.id),prepared=(actor===e.sellerId?seller:buyer).connectedOfferDraft;
-        return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller,this.now()),
+        const connectedShippingReady=await this.connectedReadiness(e);
+        return { ...view, execution:{connectedShippingReady}, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller,this.now(),connectedShippingReady),
           verifiedDropoff,
           connectedOfferDraft:connectedOfferDraftView(prepared,e.revision,this.now(),verifiedDropoff?.state==='current' && verifiedDropoff.id===prepared?.shipping.dropoffId),
           shippingData: await shippingDataView(this,e,actor,this.now()),

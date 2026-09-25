@@ -204,6 +204,14 @@ function artifactUrl(value: unknown): string {
 export type ShippoTransactionEvidence =
   | { state: 'pending' | 'error' | 'refunded' | 'refund_pending' | 'refund_rejected'; transactionId: string }
   | { state: 'purchased'; transactionId: string; trackingNumber: string; privateArtifactUrl: string; artifact: 'pdf' | 'label_qr' };
+/** Persist a canonical transaction identity even when its artifact is pending
+ * or malformed. This never establishes a usable label or permits repurchase. */
+export function shippoTransactionIdentity(receipt: ServiceResult, binding: ShippoTransactionBinding) {
+  const transaction = parse(z.object({object_id:identifier,object_owner:owner,metadata:z.string(),test:z.boolean(),rate:identifier}),shippoPayload(receipt));
+  requireEvidence(transaction.object_owner===binding.accountOwner && transaction.test===(binding.mode==='test')
+    && transaction.metadata===shippoOperationMetadata(binding.operationId) && transaction.rate===binding.rateId);
+  return transaction.object_id;
+}
 export function shippoTransaction(receipt: ServiceResult, binding: ShippoTransactionBinding,
   expectedTransactionId?: string): ShippoTransactionEvidence {
   const transaction = parse(z.object({ object_id: identifier, object_owner: owner, metadata: z.string(), test: z.boolean(),

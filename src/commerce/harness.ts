@@ -2,7 +2,7 @@ import type { Exchange, PrivateInput } from './domain.js';
 
 /** Deterministic prerequisites for the model's next decision. A plan or
  * recommendation cannot change these facts or establish provider outcomes. */
-export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, buyer: PrivateInput, seller: PrivateInput, now=new Date()) {
+export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, buyer: PrivateInput, seller: PrivateInput, now=new Date(),connectedShippingEnabled=false) {
   const buyerRole = actor === e.buyerId;
   const missing: string[] = [];
   if (!e.requestShared) missing.push('owner_share_approval');
@@ -18,7 +18,7 @@ export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, b
       && quote.destinationVersion===buyer.addressVersion && quote.packingVersion===seller.packingVersion;
     if (seller.packing && !seller.packing.canPrint && !printingCodeSupported) missing.push('supported_no_printer_fulfillment');
     if (!e.offers.length || e.stage === 'preparing_offer') missing.push('verified_fulfillment_option');
-    if(e.offers.at(-1)?.connectedShipping) missing.push('connected_shipping_execution');
+    if(e.offers.at(-1)?.connectedShipping && (!connectedShippingEnabled || e.mode!=='live')) missing.push('connected_shipping_execution');
     if (e.stage === 'offered' && !e.approvals.some(a=>a.actorId===actor)) missing.push('owner_exact_offer_approval');
     if (e.stage === 'offered' && e.approvals.length < 2) missing.push('both_exact_offer_approvals');
   }
