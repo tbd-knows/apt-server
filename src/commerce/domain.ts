@@ -84,6 +84,7 @@ export interface PrivateInput {
   suggestedAddress?: Address;
   agentAction?: PreparedAction;
   discoveryPostcode?: string; discoveryVersion?: number;
+  verifiedDropoff?: import('./verified-dropoff.js').VerifiedDropoff;
 }
 /** Preparations do not grant authority. The authenticated owner reviews the
  * exact command, and execution still uses all normal commerce guards. */

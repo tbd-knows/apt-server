@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { downloadShippingArtifact } from '../src/commerce/shipping-artifact.js';
 import sharp from 'sharp';
-import { publicEndpointFetch } from '../src/commerce/public-http.js';
+import { publicEndpointFetch,publicLocationFetch } from '../src/commerce/public-http.js';
 
 const state=vi.hoisted(()=>({ips:['93.184.216.34'],port:0,ca:'',requests:0,pinned:[] as string[],status:200,body:'{"ok":true}' as string|Buffer,path:'',type:'application/json',encoding:''}));
 vi.mock('node:dns/promises',()=>({lookup:vi.fn(async()=>state.ips.map(address=>({address,family:4})))}));
@@ -48,6 +48,24 @@ afterAll(async()=>{if(server) await new Promise<void>(resolve=>server.close(()=>
 const fetch=()=>publicEndpointFetch('https://mcp.vendor.com/mcp');
 const post={method:'POST',body:'{}',headers:{'content-type':'application/json'}};
 describe('bounded public HTTPS transport',()=>{
+  it('fetches bounded public location documents without permitting query secrets or credentials',async()=>{
+    const url='https://mcp.vendor.com/en/search?entityId=FIXTURE';
+    const location=publicLocationFetch(url,'json');
+    state.body=JSON.stringify({padding:'x'.repeat(2_300_000)});
+    expect((await (await location(url)).json()).padding.length).toBe(2_300_000);
+    expect(state.path).toBe('/en/search?entityId=FIXTURE');
+    state.body='x'.repeat(3*1_048_576+1);
+    await expect((await location(url)).text()).rejects.toThrow();
+    for(const invalid of [url+'&token=SECRET',url.replace('entityId','token'),url+'&entityId=SECOND',
+      url.replace('FIXTURE','..%2Fprivate'),url.replace('https://','https://user:secret@')]) {
+      expect(()=>publicLocationFetch(invalid,'json')).toThrow();
+    }
+    expect(()=>location(url,{method:'POST'})).toThrow();
+    await expect(location(url,{headers:{authorization:'Bearer SECRET'}})).rejects.toThrow();
+    state.type='text/html';state.body='<html>public location</html>';
+    expect(await (await publicLocationFetch('https://mcp.vendor.com/location','html')('https://mcp.vendor.com/location')).text()).toBe(state.body);
+    state.ips=['127.0.0.1'];await expect(location(url)).rejects.toThrow();
+  });
   it('uses verified TLS and pins a validated DNS answer on each request',async()=>{
     expect(await (await fetch()('https://mcp.vendor.com/mcp',post)).json()).toEqual({ok:true});
     expect(state.pinned).toEqual(['93.184.216.34']);

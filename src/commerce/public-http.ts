@@ -37,7 +37,23 @@ export class PublicHttpError extends Error {
  * proxy/cookies or follows redirects. TLS still validates the original hostname. */
 export function publicEndpointFetch(endpoint: string, options: { metadata?: boolean; bearer?: string; exposeChallenge?: boolean } = {}): FetchLike {
   if (!publicEndpoint(endpoint)) throw new PublicHttpError();
+  return boundedEndpointFetch(endpoint, options);
+}
+/** Public carrier documents only; no cookies, bearer credentials or JavaScript.
+ * The single supported query is a server-derived public location identifier. */
+export function publicLocationFetch(endpoint: string, format: 'html' | 'json'): FetchLike {
+  const url = new URL(endpoint);
+  if (!publicEndpoint(`${url.origin}${url.pathname}`) || url.username || url.password || url.hash
+    || (url.search && (url.searchParams.size !== 1 || !/^[A-Za-z0-9_-]{1,64}$/.test(url.searchParams.get('entityId') ?? '')))) throw new PublicHttpError();
+  const fetcher = boundedEndpointFetch(endpoint, { metadata: true, document: format });
+  return (input, init = {}) => {
+    if ((init.method ?? 'GET') !== 'GET' || init.body) throw new PublicHttpError();
+    return fetcher(input, init);
+  };
+}
+function boundedEndpointFetch(endpoint: string, options: { metadata?: boolean; bearer?: string; exposeChallenge?: boolean; document?: 'html' | 'json' }): FetchLike {
   const expected = new URL(endpoint).href;
+  const maxBytes = options.document === 'json' ? 3 * 1_048_576 : 1_048_576;
   return async (input,init = {}) => {
     const url = new URL(input);
     if (url.href !== expected || !['POST','GET','DELETE'].includes(init.method ?? 'GET')) throw new PublicHttpError();
@@ -82,9 +98,9 @@ export function publicEndpointFetch(endpoint: string, options: { metadata?: bool
           res.destroy(); resolve(new Response(null,{status,headers:responseHeaders})); return;
         }
         const contentType = String(res.headers['content-type'] ?? '').split(';')[0]?.trim();
-        if (!['application/json','text/event-stream'].includes(contentType ?? '')
+        if (!(options.document === 'html' ? ['text/html'] : options.document === 'json' ? ['application/json'] : ['application/json','text/event-stream']).includes(contentType ?? '')
           || !['','identity'].includes(String(res.headers['content-encoding'] ?? ''))
-          || Number(res.headers['content-length'] ?? 0)>1_048_576) {
+          || Number(res.headers['content-length'] ?? 0)>maxBytes) {
           res.destroy(); reject(new PublicHttpError()); return;
         }
         let size = 0;
@@ -92,7 +108,7 @@ export function publicEndpointFetch(endpoint: string, options: { metadata?: bool
           start(controller) {
             res.on('data',(chunk: Buffer) => {
               size += chunk.byteLength;
-              if (size>1_048_576) { res.destroy(new PublicHttpError()); return; }
+              if (size>maxBytes) { res.destroy(new PublicHttpError()); return; }
               controller.enqueue(new Uint8Array(chunk));
             });
             res.on('end',()=>controller.close());

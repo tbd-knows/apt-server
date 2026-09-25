@@ -15,6 +15,13 @@ export const shippingOptionSchema=z.object({action:z.literal('prepare_shipping_o
   revision:z.number().int().positive(),rateActionId:z.uuid(),rateId:identifier,descriptionActionId:z.uuid()}).strict();
 const optionEvidence=z.object({providerMode:z.literal('live'),rateId:identifier,carrierAccountId:identifier,
   carrierToken:identifier,sourceActionId:z.uuid()});
+export function checkedShippingOption(row:ServiceActionRow) {
+  const parsed=optionEvidence.safeParse(row.result?.structuredContent?.shippingOption);
+  const context=row.invocation.shippingOption;
+  if(row.state!=='returned' || !context || !parsed.success || parsed.data.rateId!==context.rateId
+    || parsed.data.sourceActionId!==context.rateActionId) conflict('Complete the selected carrier account check first.');
+  return parsed.data;
+}
 export function shippingOptionResultView(result:ServiceActionRow['result']):ServiceActionRow['result'] {
   const parsed=optionEvidence.safeParse(result?.structuredContent?.shippingOption);
   return parsed.success?{text:[],omittedContentTypes:[],structuredContent:{shippingOption:parsed.data}}:null;

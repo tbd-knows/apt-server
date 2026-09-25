@@ -457,3 +457,50 @@ creation and label operations rather than paying the same postage twice.
 Remaining work includes publishing a verified connected offer, dispatching its
 paid label action, reconciling it, and integrating artifact/tracking/refund/return
 operations. A selected rate alone does not authorize any of those actions.
+
+## Verifying an observed public drop-off location
+
+`verify_dropoff` takes only exchangeId/current revision, a completed carrierActionId,
+and saved researchId/sourceId. It resolves the actual selected rate and observed
+location URL on the server. The evidence is private to the seller and bound to
+that rate, carrier/account, connection generation, both owners' disclosure consent,
+address/package versions and current discovery area. It expires no later than the
+rate or consent. A second transaction rechecks the complete binding after public
+network I/O; changed inputs cannot produce a current saved result. Duplicate
+verification of current evidence reuses the saved result. No lock spans HTTP.
+
+The first supported public source is an actual `local.fedex.com/en-us/...` location
+page for FedEx Ground and a printed PDF. The server reads its public entity ID
+without executing JavaScript, then reads the same site's public entity document.
+That document must identify the exact page/location, confirm an operating
+Ground drop-off, publish an address and complete regular hours, and accept the
+parcel under carrier and location limits. Unhandled holiday exceptions fail
+closed. QR returns never establish outbound label printing. Other carriers or
+services remain research candidates until their own evidence contract is supported;
+this does not require a FedEx account or force the seller to choose FedEx.
+
+Anonymous HTTPS uses public DNS validation/pinning, normal TLS validation, bounded
+response sizes, a 15-second request deadline, no redirects, no ambient credentials,
+and no script execution. The only permitted query is a server-derived public
+entityId. Neither a private address nor a service account token is sent. Public
+HTML is capped at 1 MiB and location JSON at 3 MiB; MCP response limits stay at
+1 MiB. Only normalized location facts are saved, never the carrier's full payload.
+
+On 2026-09-25 at 07:18 UTC the production verifier fetched and parsed the actual
+[New York WTCA official location](https://local.fedex.com/en-us/ny/new-york/wtca)
+and its public entity document successfully without credentials. This was a public
+source probe with a synthetic printed-label parcel, not a founder's chosen location
+or a purchase. Ground size constraints are documented by
+[FedEx Ground](https://www.fedex.com/en-us/shipping/ground.html).
+
+Unit and real TLS tests cover service/page identity, malformed hours, closure,
+package limits, no-printer refusal, bounds, redirects, private DNS and credential
+rejection. The real-Postgres rate suite covers ownership, source selection, a human
+area change during HTTP, stale rate/consent, persistence, replay and private-data
+projection. Authenticated Shippo responses in that suite remain fixtures.
+
+The agent and seller Actions card expose current/stale compatibility, source,
+regular local hours, map, check time and expiry. This does not assert closest
+location, current opening, appointment, final offer, purchased postage or delivery.
+Connected offer publication, paid dispatch/reconciliation and tracking/refund/return
+integration remain required before this path can complete an exchange.

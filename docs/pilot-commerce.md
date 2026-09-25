@@ -299,3 +299,16 @@ switching and two-phone cellular reachability, real-model product acceptance,
 actual paid label/drop-off/carrier delivery, and live payment/refund/payout. These
 need founder-controlled credentials, accounts, devices and physical actions;
 engineering checks must not be presented as their completion.
+
+### Connected public drop-off evidence
+
+After an approved carrier-account lookup, the seller's agent may verify a saved
+research location using `verify_dropoff`. The seller Actions screen shows the
+public location and official source with current/stale status, hours and expiry.
+Changing shipping inputs, disclosure consent, service connection, discovery area
+or rate validity invalidates its binding. The first credential-free verifier
+supports actual FedEx Ground location pages for a printed label; it refuses QR
+return claims, generic finder pages and unsupported services. No postage is bought
+and no appointment is booked by this check. The exact connected offer and paid
+lifecycle are still unfinished. See `agent-service-research.md` for the live public
+source probe and deterministic/database evidence boundaries.

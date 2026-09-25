@@ -1,5 +1,8 @@
 /** Real disposable Postgres; no model, third-party disclosure or purchase. */
 import assert from 'node:assert/strict';
+import { verifyDropoff } from '../src/commerce/verified-dropoff.js';
+import { verifyPublicDropoff } from '../src/commerce/public-dropoff.js';
+import { locationFixture,locationUrl } from '../test/fixtures/public-dropoff.js';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { CommerceRepository } from '../src/commerce/repository.js';
@@ -37,6 +40,7 @@ try {
   await command(A,draft.id,{type:'address',address:{...address,street2:'BUYER_PRIVATE_ADDRESS_CANARY'}});
   await command(B,draft.id,{type:'address',address:{...address,street2:'SELLER_PRIVATE_ADDRESS_CANARY'}});
   await command(B,draft.id,{type:'packing',packing:{weightOz:32,lengthIn:12,widthIn:8,heightIn:6,packed:true,canPrint:true}});
+  await command(B,draft.id,{type:'research_area',postcode:'10001'});
   const research = randomUUID(), connection = randomUUID(), generation = randomUUID(), endpoint = 'https://mcp.shippo.com/';
   await pool.query(`insert into pilot_research(id,exchange_id,owner_id,mode,kind,input,input_hash,state,approved_at,result)
     values($1,$2,$3,'test','inspect_mcp',$4,$5,'ready',now(),$6)`,[research,draft.id,B,{url:endpoint,addressVersion:0},randomUUID(),{sources:[],mcp:{status:'authorization_required'}}]);
@@ -136,13 +140,13 @@ try {
         payload={...args,object_id:'shipment_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,status:'WAITING',rates:[]};
       } else if(operation==='GetCarrierAccount') {
         carrierCalls++;assert.equal(message.params.name,read.name);assert.deepEqual(args,{CarrierAccountId:'carrier_fixture'});
-        payload={object_id:'carrier_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,active:carrierActive,carrier:'usps',parameters:{password:'PRIVATE_CARRIER_SECRET_CANARY'}};
+        payload={object_id:'carrier_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,active:carrierActive,carrier:'fedex',parameters:{password:'PRIVATE_CARRIER_SECRET_CANARY'}};
       } else {
         assert.equal(operation,'GetShipment');assert.equal(message.params.name,read.name);assert.deepEqual(args,{ShipmentId:'shipment_fixture'});retrievalCalls++;
         payload={...originalCreation,object_id:'shipment_fixture',object_owner:foreignAccount?'ANOTHER_ACCOUNT':'PRIVATE_ACCOUNT_CANARY',test:false,status:'SUCCESS',
           parcels:[{...originalCreation.parcels[0],object_id:'parcel_fixture'}],
           rates:[{object_id:'rate_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',object_created:new Date().toISOString(),test:false,
-            shipment:'shipment_fixture',carrier_account:'carrier_fixture',provider:'USPS',servicelevel:{token:'usps_ground_advantage',name:'Ground Advantage'},
+            shipment:'shipment_fixture',carrier_account:'carrier_fixture',provider:'FedEx',servicelevel:{token:'fedex_ground',name:'Ground'},
             amount:'8.05',currency:'USD',estimated_days:3}]};
       }
       result={content:[{type:'text',text:JSON.stringify({ContentType:'application/json',StatusCode:200,RawResponse:{secret:'TOKEN_CANARY'},Response:payload})}]};
@@ -206,14 +210,62 @@ try {
   await assert.rejects(connections.decideAction(B,option.id,option.digest,true,'free_shipping_rates'),/correct service action purpose/);
   const checked=await connections.decideAction(B,option.id,option.digest,true,'free_shipping_option');
   assert.equal(checked.state,'returned');assert.equal(carrierCalls,1);
-  assert.deepEqual(checked.result?.structuredContent?.shippingOption,{rateId:'rate_fixture',carrierAccountId:'carrier_fixture',carrierToken:'usps',sourceActionId:poll.id,providerMode:'live'});
+  assert.deepEqual(checked.result?.structuredContent?.shippingOption,{rateId:'rate_fixture',carrierAccountId:'carrier_fixture',carrierToken:'fedex',sourceActionId:poll.id,providerMode:'live'});
   assert(!JSON.stringify(checked).includes('CANARY'));
   assert(!JSON.stringify((await pool.query('select result from pilot_service_actions where id=$1',[option.id])).rows).includes('CANARY'));
   await connections.decideAction(B,option.id,option.digest,true,'free_shipping_option');assert.equal(carrierCalls,1);
   assert.equal((await prepareShippingOption(service(),B,randomUUID(),optionInput)).id,option.id);
+  // Public location verification uses the real parser with synthetic HTTP data.
+  // No carrier account credentials or private address leave the DB in this step.
+  const nearby=randomUUID(),sourceId=randomUUID();
+  const researchInput=async()=>({query:'fixture public search',addressVersion:(await service().get(B,draft.id)).privateInput.discoveryVersion});
+  await pool.query(`insert into pilot_research(id,exchange_id,owner_id,mode,kind,input,input_hash,state,result)
+    values($1,$2,$3,'test','nearby',$4,$5,'ready',$6)`,[nearby,draft.id,B,await researchInput(),randomUUID(),
+    {sources:[{id:sourceId,url:locationUrl,title:'Official location',description:'Public source'}],checkedAt:new Date().toISOString(),verifiedForFulfillment:false}]);
+  let publicCalls=0;
+  const publicVerifier:Parameters<typeof verifyDropoff>[3]=request=>{
+    assert(!JSON.stringify(request).includes('CANARY'));assert.deepEqual(Object.keys(request).sort(),['carrierToken','packing','serviceToken','sourceUrl']);
+    return verifyPublicDropoff(request,(url,format)=>async()=>{publicCalls++;
+      assert(url===locationUrl || url==='https://local.fedex.com/en/search?entityId=FIXTURE');
+      return new Response(format==='html'?'Yext["EntityId"] = "FIXTURE"':JSON.stringify(locationFixture()));
+    });
+  };
+  const dropoffInput=async()=>({action:'verify_dropoff' as const,exchangeId:draft.id,revision:(await service().get(B,draft.id)).revision,
+    carrierActionId:option.id,researchId:nearby,sourceId});
+  await assert.rejects(verifyDropoff(service(),A,await dropoffInput(),publicVerifier),/other participant/);
+  await assert.rejects(verifyDropoff(service(),B,{...await dropoffInput(),sourceId:randomUUID()},publicVerifier),/observed official location/);
+  await assert.rejects(service().invoke(context,{...await dropoffInput(),sourceUrl:locationUrl}));
+  assert.equal(publicCalls,0);
+  // Human input can change during the network call: no lock is held, and the
+  // second transaction refuses to persist evidence for the old discovery area.
+  await assert.rejects(verifyDropoff(service(),B,await dropoffInput(),async request=>{
+    const result=await publicVerifier(request);
+    await command(B,draft.id,{type:'research_area',postcode:'10002'});
+    return result;
+  }),/exchange changed/);
+  assert.equal((await service().get(B,draft.id)).verifiedDropoff,null);
+  await assert.rejects(verifyDropoff(service(),B,await dropoffInput(),publicVerifier),/current discovery area/);
+  await pool.query('update pilot_research set input=$2 where id=$1',[nearby,await researchInput()]);
+  const location=await verifyDropoff(service(),B,await dropoffInput(),publicVerifier);
+  assert.equal(location.state,'current');assert.equal(location.scope,'location_compatibility_only');assert.equal(publicCalls,4);
+  assert.equal((await verifyDropoff(service(),B,await dropoffInput(),publicVerifier)).id,location.id);assert.equal(publicCalls,4);
+  await pool.query("update pilot_connections set access_expires_at=now()-interval '1 second' where id=$1",[connection]);
+  assert.equal((await service().get(B,draft.id)).verifiedDropoff?.state,'stale');
+  await assert.rejects(verifyDropoff(service(),B,await dropoffInput(),publicVerifier),/Recheck the connected service access/);
+  assert.equal(publicCalls,4);
+  await pool.query("update pilot_connections set access_expires_at=now()+interval '1 hour' where id=$1",[connection]);
+  const persisted=await service().get(B,draft.id);
+  assert.equal(persisted.verifiedDropoff?.id,location.id);
+  assert.equal((await service().get(A,draft.id)).verifiedDropoff,null);
+  const sellerModel=await service().invoke(context,{action:'state',exchangeId:draft.id});
+  assert(JSON.stringify(sellerModel).includes(location.id));assert(!JSON.stringify(sellerModel).includes('CANARY'));
+  const privateRecord=(await repository.privateInput(await repository.get(draft.id,B),B)).verifiedDropoff!;
+  assert(!JSON.stringify(sellerModel).includes(privateRecord.binding));
+  optionInput.revision=(await service().get(B,draft.id)).revision;
   const expiredSource=structuredClone(stored);expiredSource.structuredContent.shippingRates.shipment.rates[0].expiresAt='2000-01-01T00:00:00Z';
   await pool.query('update pilot_service_actions set result=$2 where id=$1',[poll.id,expiredSource]);
   await assert.rejects(prepareShippingOption(service(),B,randomUUID(),optionInput),/missing or expired/);
+  assert.equal((await service().get(B,draft.id)).verifiedDropoff?.state,'stale');
   await pool.query('update pilot_service_actions set result=$2 where id=$1',[poll.id,stored]);
   // Another described check cannot bypass provider active-state verification.
   const secondCarrierDescription=await describe('GetCarrierAccount','read',{CarrierAccountId:'string'});
@@ -239,6 +291,6 @@ try {
   const rejected=await connections.decideAction(B,foreign.id,foreign.digest,true,'free_shipping_rates');
   assert.equal(rejected.state,'returned_error');assert.equal(rejected.result,null);
   assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[draft.id])).rows[0].n,0);
-  const final=await service().get(B,draft.id);assert.equal(final.payment,'unpaid');assert.equal(final.shipping,'none');assert.equal(final.offer,null);
-  process.stdout.write('PASS: approved private SDK rate creation/retrieval, two validated addresses, exact prices, active selected-carrier SDK verification, expiry, live-mode evidence, privacy, duplicate/uncertain dispatch, consent withdrawal race, account binding; no external calls or purchases.\n');
+  const final=await service().get(B,draft.id);assert.equal(final.verifiedDropoff?.state,'stale');assert.equal(final.payment,'unpaid');assert.equal(final.shipping,'none');assert.equal(final.offer,null);
+  process.stdout.write('PASS: approved private SDK rate creation/retrieval, two validated addresses, exact prices, active selected-carrier SDK verification, official public drop-off binding/expiry/area-change race and replay, expiry, live-mode evidence, privacy, duplicate/uncertain dispatch, consent withdrawal race, account binding; no external calls or purchases.\n');
 } finally {await pool.end();}

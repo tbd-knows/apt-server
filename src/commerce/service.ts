@@ -17,6 +17,7 @@ import { proposeShippingData, decideShippingData, shippingDataView } from './shi
 import { prepareShippingValidation,shippingValidationSchema } from './shipping-validation.js';
 import { prepareShippingOption,shippingOptionSchema } from './shipping-option.js';
 import { prepareShippingRates,shippingRatesSchema } from './shipping-rates.js';
+import { verifyDropoff,verifyDropoffSchema,verifiedDropoffView } from './verified-dropoff.js';
 
 export class CommerceService {
   get research() { return new CommerceResearch(this); }
@@ -45,7 +46,9 @@ export class CommerceService {
     const operations = (await this.repository.pool.query(`select id,kind,state,attempts,provider_id as "providerId",
       case when kind='label_refund' then result->>'refundStatus' else null end as "labelRefundStatus"
       from pilot_operations where exchange_id=$1 order by created_at`, [id])).rows;
-    return { ...view, requestDigest: digest(e.request), privateInput: await this.repository.privateInput(e, actor),
+    const {verifiedDropoff:_internalDropoff,...privateInput}=await this.repository.privateInput(e,actor);
+    return { ...view, requestDigest: digest(e.request), privateInput,
+      verifiedDropoff:await verifiedDropoffView(this,actor,id),
       shippingData: await shippingDataView(this,e,actor,this.now()),
       operations, deliveries: await this.deliveries(actor, id), research: await this.research.list(actor,id),connections:await listConnections(this,actor,id),serviceActions:await listServiceActions(this,actor,id),
       execution: { checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
@@ -459,7 +462,7 @@ export class CommerceService {
         command: preparedCommandSchema, explanation: z.string().trim().min(1).max(500) }).strict(),
       z.object({ action: z.literal('research'), exchangeId: z.uuid(), research: researchInputSchema }).strict(),
       serviceActionSchema,serviceHistorySchema,
-      shippingValidationSchema,shippingRatesSchema,shippingOptionSchema,
+      shippingValidationSchema,shippingRatesSchema,shippingOptionSchema,verifyDropoffSchema,
     ]).parse(raw);
     const actor = context.userId;
     if (command.action === 'state') {
@@ -470,6 +473,7 @@ export class CommerceService {
         const [buyer, seller] = await Promise.all([this.repository.privateInput(e, e.buyerId), this.repository.privateInput(e, e.sellerId)]);
         const serviceActions=await listServiceActions(this,actor,e.id);
         return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller,this.now()),
+          verifiedDropoff:await verifiedDropoffView(this,actor,e.id),
           shippingData: await shippingDataView(this,e,actor,this.now()),
           deliveries: await this.deliveries(actor, e.id), research: await this.research.list(actor,e.id),connections:await listConnections(this,actor,e.id),serviceActions:serviceActions.slice(-5),serviceActionHistoryCursor:serviceActions.length>5?serviceActions.at(-5)!.id:null };
       }));
@@ -483,6 +487,7 @@ export class CommerceService {
     if (command.action === 'service_history') return serviceActionHistory(this,actor,command);
     if (command.action === 'prepare_service_action') return prepareServiceAction(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_option') return prepareShippingOption(this,actor,context.requestMessageId,command);
+    if (command.action === 'verify_dropoff') return verifyDropoff(this,actor,command);
     if (command.action === 'prepare_shipping_rates') return prepareShippingRates(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_validation') return prepareShippingValidation(this,actor,context.requestMessageId,command);
     const key = command.action === 'ask_owner' ? `agent:${context.requestMessageId}:${digest(command)}` : `agent-action:${context.requestMessageId}`;
