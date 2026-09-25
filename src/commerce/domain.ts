@@ -73,8 +73,9 @@ export interface Exchange {
   carrierAcceptedAt: string | null; trackingUpdatedAt: string | null;
   cancellationRequested: boolean; problem: string | null;
   operationIssues?: Record<string, string>;
-  resolution?: { id: string; remedy: 'resume' | 'refund' | 'return' | 'absorb_postage'; reason: string; offerDigest: string; amount: number;
-    currency: 'USD'; expiresAt: string; approvedBy: string[] };
+  resolution?: { id: string; remedy: 'resume' | 'refund' | 'return' | 'absorb_postage' | 'renew_postage'; reason: string; offerDigest: string; amount: number;
+    currency: 'USD'; expiresAt: string; approvedBy: string[];
+    postageRenewal?: { authorizationId: string; accessDigest: string; operationId: string } };
   returnPlan?: ReturnPlan;
   shippingData?: ShippingDataConsent;
   createdAt: string; updatedAt: string; expiresAt: string;
@@ -100,6 +101,7 @@ export const preparedCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('quote') }).strict(),
   z.object({ type: z.literal('checkout') }).strict(),
   z.object({ type: z.literal('propose_shipping_data'), connectionId: z.uuid() }).strict(),
+  z.object({ type: z.literal('propose_resolution'), remedy: z.enum(['resume','refund','return','absorb_postage','renew_postage']), reason: shortText }).strict(),
 ]);
 export interface ShippingDataConsent {
   /** Historical permissions without a journey cover the original sale only. */
@@ -255,7 +257,7 @@ export const humanCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('approve_agent_action'), actionId: z.uuid(), actionDigest: z.string().length(64) }).strict(),
   z.object({ type: z.literal('dismiss_agent_action'), actionId: z.uuid() }).strict(),
   z.object({ type: z.literal('attach_provider_reference'), operationId: z.uuid(), providerId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/), reason: shortText }).strict(),
-  z.object({ type: z.literal('propose_resolution'), remedy: z.enum(['resume','refund','return','absorb_postage']), reason: shortText }).strict(),
+  z.object({ type: z.literal('propose_resolution'), remedy: z.enum(['resume','refund','return','absorb_postage','renew_postage']), reason: shortText }).strict(),
   z.object({ type: z.literal('approve_resolution'), binding: z.unknown() }).strict(),
   z.object({ type: z.literal('return_packing'), packing: packingSchema }).strict(),
   z.object({ type: z.literal('return_quote') }).strict(),

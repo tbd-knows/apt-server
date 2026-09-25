@@ -560,3 +560,32 @@ changes, hidden account/authorization context, separate two-owner approvals,
 old-client denial and no live postage from test payment. Unit tests cover original
 rate-age preservation, provider/request/offer deadlines and Stripe's fulfillment
 margin; mobile tests cover service/account/mode and fulfillment permission text.
+
+## Renewing unchanged, paid postage authority
+
+When the original postage permission expires or the original seller account is
+reauthorized before any purchase dispatch, either owner can propose
+`renew_postage`. An agent may prepare that proposal, but only a human can submit
+it and both owners must separately approve the exact resolution. The mobile
+review names the original carrier/service, exact price and deadline, and states
+that the paid sale and Stripe reimbursement remain unchanged.
+
+The proposal binds the paid offer digest, original shipping authorization,
+current account generation and inspected catalog, one existing label operation,
+and a new deadline capped by the original provider purchase deadline and ship-by.
+Addresses, parcel, item and original sale approvals must still match. A known
+provider reference, any possible prior dispatch, a refund operation, cancellation,
+physical handoff or return prevents this renewal. A changed rate requires refund
+and a separately approved new sale; this is not a price-editing feature.
+
+The second approval resets only the original never-dispatched operation. Its
+worker still checks current canonical Stripe payment and transfer, exact rate and
+carrier account, current access and both approvals immediately before the durable
+once-only dispatch claim. A changed service or expiry after approval stops it.
+Reconnection without this decision continues to permit reconciliation reads only.
+
+Real PostgreSQL/MCP SDK fixtures cover agent preparation without consent, one-owner
+refusal, both-owner recovery, concurrent worker/restart behavior, changed access
+between approvals, changed price/forms, cancellation, wrong operation, expiry,
+and rejection of known/possibly dispatched purchases and refunds. They do not
+establish real provider or live-model acceptance.

@@ -426,7 +426,7 @@ try {
   await assert.rejects(reader.transaction(liveExchange,offer,labelOp,'transaction_fixture'),/Describe GetTransaction/);
   await pool.query('update pilot_service_actions set generation=$2 where connection_id=$1',[connection,nextGeneration]);
   assert.equal((await reader.transaction(liveExchange,offer,labelOp,'transaction_fixture')).state,'purchased');
-  await assert.rejects(reader.preflight(liveExchange,offer),/account, item or private/);
+  await assert.rejects(reader.preflight(liveExchange,offer),/service access changed/);
   await pool.query('update pilot_connections set generation=$2 where id=$1',[connection,generation]);
   await pool.query('update pilot_service_actions set generation=$2 where connection_id=$1',[connection,generation]);
   await checkConnectedWorker(repository,liveExchange,connection,root,[read,write],describe);

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { renewedPostage } from './postage-renewal.js';
 import { z } from 'zod';
 import type { PoolClient } from 'pg';
 import { AppError } from '../errors.js';
@@ -42,10 +43,12 @@ export async function requireConnectedOffer(commerce:CommerceService,sql:PoolCli
   if(!shipping || !offer.connectedShipping || offer.postageFunding!=='seller_reimbursed'
     || offer.connectedShipping.authorizationId!==shipping.authorizationId || shipping.offerDigest!==digest(offer)
     || offer.connectedShipping.endpoint!==shipping.endpoint || offer.connectedShipping.providerMode!=='live'
-    || e.mode!==commerce.mode || (purpose==='spend' && Date.parse(offer.expiresAt)<=Date.now())) conflict('The connected shipping authorization is missing, changed or expired.');
-  const connection=(await sql.query<{id:string}>(`select id from pilot_connections where id=$1 and owner_id=$2 and exchange_id=$3
-    and mode=$4 and ($7::boolean or generation=$5) and endpoint=$6 and state='connected' and access_expires_at>now() for update`,
-    [shipping.connectionId,e.sellerId,e.id,e.mode,shipping.generation,shipping.endpoint,purpose==='reconcile'])).rows[0];
+    || e.mode!==commerce.mode) conflict('The connected shipping authorization is missing, changed or expired.');
+  const connection=(await sql.query<{id:string;generation:string;endpoint:string;inspection:unknown}>(`select id,generation,endpoint,inspection from pilot_connections where id=$1 and owner_id=$2 and exchange_id=$3
+    and mode=$4 and endpoint=$5 and state='connected' and access_expires_at>now() for update`,
+    [shipping.connectionId,e.sellerId,e.id,e.mode,shipping.endpoint])).rows[0];
+  if(connection && purpose==='spend' && (Date.parse(offer.expiresAt)<=Date.now() || connection.generation!==shipping.generation)
+    && !renewedPostage(e,offer,shipping,connection)) conflict('Postage authority expired or service access changed. Both owners must review renewal or refund the paid sale.');
   const buyer=await commerce.repository.privateInput(e,e.buyerId,sql),seller=await commerce.repository.privateInput(e,e.sellerId,sql);
   if(!connection || (purpose==='spend' && (buyer.addressVersion!==offer.quote.destinationVersion || seller.addressVersion!==offer.quote.originVersion
     || seller.packingVersion!==offer.quote.packingVersion || digest(e.item)!==digest(offer.item)))) {

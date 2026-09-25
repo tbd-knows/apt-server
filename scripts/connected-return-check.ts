@@ -78,6 +78,11 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
     await pool.query('update pilot_exchanges set data=$2 where id=$1',[order.id,order]);
     await command(A,{type:'propose_resolution',remedy:'return',reason:'Return the fixture item'});
     for(const actor of [A,B]) await command(actor,{type:'approve_resolution',binding:(await service.get(actor,order.id)).resolutionBinding});
+    const agreed=await repository.get(order.id,A),stale=structuredClone(agreed);
+    stale.resolution!.offerDigest='0'.repeat(64);
+    await pool.query('update pilot_exchanges set data=$2 where id=$1',[order.id,stale]);
+    await assert.rejects(command(B,{type:'propose_shipping_data',connectionId:connection}),/agree to a return/);
+    await pool.query('update pilot_exchanges set data=$2 where id=$1',[order.id,agreed]);
     await command(A,{type:'return_packing',packing:{weightOz:43,lengthIn:14,widthIn:9,heightIn:7,packed:true,canPrint:!noPrinter}});
     await command(A,{type:'research_area',postcode:'10001'});
     const research=await service.research.request(A,order.id,{kind:'nearby'});

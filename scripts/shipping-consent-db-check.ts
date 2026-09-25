@@ -1,6 +1,7 @@
 /** Real disposable Postgres; no model, third-party disclosure or purchase. */
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { digest } from '../src/commerce/domain.js';
 import pg from 'pg';
 import { CommerceRepository } from '../src/commerce/repository.js';
 import { CommerceService } from '../src/commerce/service.js';
@@ -215,6 +216,8 @@ try {
     returnPlan:{resolutionId,version:0,quote:null,subsidy:'',approvals:[],shipping:'none',droppedAt:null,carrierAcceptedAt:null,trackingUpdatedAt:null,receivedAt:null}}]);
   await repository.transaction(async sql=>{
     const e=await repository.get(draft.id,B,sql);
+    e.resolution!.offerDigest=digest(e.offers.at(-1));
+    await repository.save(sql,e,new Date());
     const seller=await repository.privateInput(e,B,sql);
     await sql.query('update pilot_private_inputs set data=$3 where exchange_id=$1 and owner_id=$2',[e.id,B,
       {...seller,connectedShipping:{'1':{connectionId:connection,authorizationId}}}]);

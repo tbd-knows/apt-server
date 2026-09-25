@@ -20,6 +20,7 @@ import { prepareShippingRates,shippingRatesSchema } from './shipping-rates.js';
 import { verifyDropoff,verifyDropoffSchema,verifiedDropoffView } from './verified-dropoff.js';
 import { prepareConnectedOffer,connectedOfferSchema,connectedOfferDraftView,shareConnectedOffer,requireConnectedOffer,type OfferEconomics } from './connected-offer.js';
 import { requireConnectedShippingLifecycle } from './connected-shipping-read.js';
+import { approvePostageRenewal, proposePostageRenewal } from './postage-renewal.js';
 
 export class CommerceService {
   get research() { return new CommerceResearch(this); }
@@ -324,6 +325,7 @@ export class CommerceService {
           if (!(command.remedy === 'absorb_postage' && e.payment === 'refunded') && !['paid','refund_failed'].includes(e.payment)) conflict('Reconcile payment before proposing a resolution.');
           e.resolution = { id: randomUUID(), remedy: command.remedy, reason: command.reason, offerDigest: digest(currentOffer(e)),
             amount: command.remedy === 'absorb_postage' ? currentOffer(e).quote.shippingAmount : currentOffer(e).buyerTotal, currency: 'USD', expiresAt: new Date(now.getTime() + 86400000).toISOString(), approvedBy: [] };
+          if(command.remedy==='renew_postage') Object.assign(e.resolution,await proposePostageRenewal(this,sql,e,now));
           await this.repository.message(sql, e, actor, other, 'status', { action: 'resolution', text: command.reason });
           break;
         case 'approve_resolution': {
@@ -332,6 +334,11 @@ export class CommerceService {
             || stableJson(command.binding) !== stableJson(resolutionBinding(e, actor))) conflict('The resolution changed or expired.');
           if (proposal.approvedBy.includes(actor)) conflict('You already approved this resolution.');
           proposal.approvedBy.push(actor);
+          if(proposal.remedy==='renew_postage') {
+            await approvePostageRenewal(this,sql,e);
+            await this.repository.message(sql,e,actor,other,'status',{action:'postage_renewal',approvalCount:proposal.approvedBy.length});
+            break;
+          }
           if (proposal.approvedBy.length === 2) {
             if (proposal.remedy === 'absorb_postage') {
               if (e.payment !== 'refunded') conflict('Reconcile the buyer refund first.');

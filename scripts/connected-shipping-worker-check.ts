@@ -26,6 +26,7 @@ export async function checkConnectedWorker(repository:CommerceRepository,origina
   let transactionStatus='SUCCESS',trackingStatus='PRE_TRANSIT',refundStatus='PENDING';
   let malformedLabel=false,losePurchase=false,loseRefund=false,trackingFails=false;
   let qrScenario=false,missingQr=false;
+  let rateAmount='8.05';
   let eventTime=new Date().toISOString();
   let beforeDispatch:((name:string)=>Promise<void>)|undefined,afterDispatch:((name:string)=>Promise<void>)|undefined;
   const fact:PaymentFact={sessionId:'cs_connected_fixture',status:'paid',amount:offer.buyerTotal,currency:'usd',
@@ -64,7 +65,7 @@ export async function checkConnectedWorker(repository:CommerceRepository,origina
       } else if(name==='GetTransaction') {reads++;assert.deepEqual(args,{TransactionId:'transaction_fixture'});payload=transaction;}
       else if(name==='GetRate') payload={object_id:offer.quote.rateId,object_owner:'PRIVATE_ACCOUNT_CANARY',object_created:new Date().toISOString(),
         test:false,shipment:offer.quote.shipmentId,carrier_account:offer.quote.carrierAccountId,provider:offer.quote.carrier,
-        servicelevel:{token:offer.quote.service,name:'Ground'},amount:'8.05',currency:'USD'};
+        servicelevel:{token:offer.quote.service,name:'Ground'},amount:rateAmount,currency:'USD'};
       else if(name==='GetCarrierAccount') payload={object_id:offer.quote.carrierAccountId,object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,active:true,carrier:qrScenario?'usps':'fedex'};
       else if(name==='GetTrack') {
         if(trackingFails) throw new Error('synthetic tracking outage');
@@ -169,8 +170,95 @@ export async function checkConnectedWorker(repository:CommerceRepository,origina
       if(artifact.state==='purchased') {assert.equal(artifact.artifact,'label_qr');assert(artifact.privateArtifactUrl.includes('label-broker.pdf'));}
       assert(!JSON.stringify(await service.get(e.sellerId,e.id)).includes('PRIVATE_QR_CANARY'));
     } finally {
-      Object.assign(offer,originalOffer);qrScenario=false;missingQr=false;
+      Object.assign(offer,structuredClone(originalOffer));qrScenario=false;missingQr=false;
       await repository.transaction(sql=>repository.savePrivate(sql,e,e.sellerId,sellerInput));
+    }
+    // Expired permission can renew only the exact paid, never-dispatched
+    // operation. Agent preparation creates no consent and neither a retry nor
+    // one owner's approval can independently authorize a purchase.
+    const renewalSeller=await repository.privateInput(e,e.sellerId);
+    const connectionSnapshot=(await pool.query('select generation,inspection from pilot_connections where id=$1',[connection])).rows[0];
+    const command=async(actor:string,input:unknown)=>{
+      const view=await service.get(actor,e.id);
+      return service.command(actor,e.id,randomUUID(),view.revision,input);
+    };
+    const propose=()=>command(e.sellerId,{type:'propose_resolution',remedy:'renew_postage',reason:'Renew the unchanged paid postage permission.'});
+    const approve=async(actor:string)=>{
+      const view=await service.get(actor,e.id);
+      return command(actor,{type:'approve_resolution',binding:view.resolutionBinding});
+    };
+    offer.expiresAt=new Date(Date.now()-60_000).toISOString();offer.quote.expiresAt=offer.expiresAt;
+    const expiredSeller=structuredClone(renewalSeller);
+    expiredSeller.connectedShipping![String(offer.version)]!.offerDigest=digest(offer);
+    await repository.transaction(sql=>repository.savePrivate(sql,e,e.sellerId,expiredSeller));
+    try {
+      await reset();await run();assert.equal(purchases,0);assert.equal((await op(labelId)).state,'failed');
+      const view=await service.get(e.sellerId,e.id);
+      await service.invoke({userId:e.sellerId,runId:randomUUID(),requestMessageId:randomUUID()},
+        {action:'prepare_action',exchangeId:e.id,revision:view.revision,
+          command:{type:'propose_resolution',remedy:'renew_postage',reason:'Review renewing original postage.'},explanation:'Both owners must separately approve before any spending.'});
+      const prepared=(await service.get(e.sellerId,e.id)).privateInput.agentAction!;
+      assert.equal((await current()).resolution,undefined);
+      await command(e.sellerId,{type:'approve_agent_action',actionId:prepared.id,actionDigest:prepared.digest});
+      assert.equal((await current()).resolution!.approvedBy.length,0);
+      await approve(e.buyerId);await assert.rejects(driver().preflight(await current(),offer),/expired/);
+      await assert.rejects(approve(e.buyerId),/already approved/);
+      await approve(e.sellerId);assert.equal((await op(labelId)).state,'pending');
+      await Promise.all([run(),run()]);await run();
+      assert.equal(purchases,1);assert.equal((await current()).shipping,'label_ready');
+      assert.equal(digest((await current()).offers.at(-1)),digest(offer));
+      assert.equal((await current()).resolution!.postageRenewal!.operationId,labelId);
+      assert.equal(fact.amount,offer.buyerTotal);
+      // Renewal must not replace a known or uncertain purchase or a refund.
+      for(const mutation of ['provider','effect','refund','packing','cancel'] as const) {
+        await reset();await run();
+        if(mutation==='provider') await pool.query("update pilot_operations set provider_id='transaction_fixture' where id=$1",[labelId]);
+        if(mutation==='effect') await pool.query(`update pilot_operations set result='{"effectStarted":true}' where id=$1`,[labelId]);
+        if(mutation==='refund') await insert(refundId,'refund');
+        if(mutation==='cancel') {const changed=await current();changed.cancellationRequested=true;await save(changed);}
+        if(mutation==='packing') {
+          const changed=structuredClone(expiredSeller);changed.packingVersion++;
+          await repository.transaction(sql=>repository.savePrivate(sql,e,e.sellerId,changed));
+        }
+        await assert.rejects(propose(),/unchanged paid sale|undispatched postage/);assert.equal(purchases,0);
+        await repository.transaction(sql=>repository.savePrivate(sql,e,e.sellerId,expiredSeller));
+      }
+      for(const mutation of ['generation','schema'] as const) {
+        await reset();await run();await propose();await approve(e.buyerId);
+        if(mutation==='generation') await pool.query('update pilot_connections set generation=$2 where id=$1',[connection,randomUUID()]);
+        else await pool.query("update pilot_connections set inspection=jsonb_set(inspection,'{tools}',$2) where id=$1",
+          [connection,JSON.stringify(tools.map(tool=>({...tool,description:'Changed during renewal'})))]);
+        await assert.rejects(approve(e.sellerId),/service access/);
+        assert.equal((await current()).resolution!.approvedBy.length,1);assert.equal(purchases,0);
+        await pool.query('update pilot_connections set generation=$2,inspection=$3 where id=$1',
+          [connection,connectionSnapshot.generation,connectionSnapshot.inspection]);
+      }
+      for(const mutation of ['rate','expiry','operation','cancel'] as const) {
+        await reset();await run();await propose();await approve(e.buyerId);await approve(e.sellerId);
+        if(mutation==='rate') rateAmount='8.06';
+        else {const changed=await current();
+          if(mutation==='expiry') changed.resolution!.expiresAt=new Date(Date.now()-1000).toISOString();
+          if(mutation==='operation') changed.resolution!.postageRenewal!.operationId=randomUUID();
+          if(mutation==='cancel') changed.cancellationRequested=true;
+          await save(changed);
+        }
+        await run();assert.equal(purchases,0,mutation);assert.equal((await op(labelId)).result?.effectStarted,undefined,mutation);
+        rateAmount='8.05';
+      }
+      // Reauthorization can recover the original account with fresh catalogue
+      // descriptions, without changing the already-paid offer or generation.
+      await reset();await run();
+      const nextGeneration=randomUUID();
+      await pool.query('update pilot_connections set generation=$2 where id=$1',[connection,nextGeneration]);
+      await pool.query('update pilot_service_actions set generation=$2 where connection_id=$1',[connection,nextGeneration]);
+      await propose();await approve(e.buyerId);await approve(e.sellerId);await run();
+      assert.equal(purchases,1);assert.equal((await current()).shipping,'label_ready');
+    } finally {
+      Object.assign(offer,structuredClone(originalOffer));rateAmount='8.05';
+      await repository.transaction(sql=>repository.savePrivate(sql,e,e.sellerId,renewalSeller));
+      await pool.query('update pilot_connections set generation=$2,inspection=$3 where id=$1',
+        [connection,connectionSnapshot.generation,connectionSnapshot.inspection]);
+      await pool.query('update pilot_service_actions set generation=$2 where connection_id=$1',[connection,connectionSnapshot.generation]);
     }
     // Canonical Stripe state is checked after MCP catalogue discovery, before
     // dispatch. A locally paid order is insufficient.
@@ -247,7 +335,7 @@ export async function checkConnectedWorker(repository:CommerceRepository,origina
       for(const secret of ['PRIVATE_ACCOUNT_CANARY','PRIVATE_ARTIFACT_CANARY','TOKEN_CANARY']) assert(!projection.includes(secret));
     }
     assert(reads>0);
-    process.stdout.write('PASS: connected worker exact once-only purchase, canonical payment/approval/revocation fences, persisted transaction identity, concurrency/restart, pending/malformed/unknown recovery, cancellation races, monotonic tracking/delivery/receipt, separate once-only postage refund, unknown refund recovery, handoff denial and private evidence. Provider responses are fixtures.\n');
+    process.stdout.write('PASS: connected worker exact once-only purchase, canonical payment/approval/revocation fences, persisted transaction identity, concurrency/restart, two-owner exact paid-postage renewal and reauthorization, agent preparation without consent, changed price/access/input and possible-purchase denial, pending/malformed/unknown recovery, cancellation races, monotonic tracking/delivery/receipt, separate once-only postage refund, unknown refund recovery, handoff denial and private evidence. Provider responses are fixtures.\n');
   } finally {
     await pool.query('delete from pilot_operations where exchange_id=$1',[e.id]);
     await pool.query('insert into pilot_operations select * from jsonb_populate_recordset(null::pilot_operations,$1::jsonb)',[JSON.stringify(originalOperations)]);

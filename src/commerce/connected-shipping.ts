@@ -33,6 +33,9 @@ export class ConnectedShipping extends ConnectedShippingRead {
         || ![current.buyerId,current.sellerId].every(actor=>current.approvals.some(a=>digest(a)===digest(approvalFor(current,actor))))) {
         conflict('Both current sale approvals are required for postage.');
       }
+      if(current.resolution?.remedy==='renew_postage' && current.resolution.postageRenewal?.operationId!==op.id) {
+        conflict('Postage renewal belongs to a different operation.');
+      }
       await this.claim(sql,current,offer,op,'label');
     },verifyPayment);
     const binding:ShippoTransactionBinding={operationId:op.id,accountOwner:shipping.accountOwner,mode:'live',rateId:offer.quote.rateId,

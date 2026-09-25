@@ -112,7 +112,8 @@ export class ConnectedShippingRead {
     if(rate.rateId!==offer.quote.rateId || rate.carrierAccountId!==offer.quote.carrierAccountId
       || rate.carrierName!==offer.quote.carrier || rate.serviceToken!==offer.quote.service
       || rate.amount!==offer.quote.shippingAmount || rate.currency!==offer.quote.currency
-      || !rate.purchaseBefore || Date.parse(rate.purchaseBefore)<Date.parse(offer.expiresAt)) {
+      || !rate.purchaseBefore || Date.parse(rate.purchaseBefore)<Date.parse(offer.expiresAt)
+      || (e.resolution?.remedy==='renew_postage' && Date.parse(rate.purchaseBefore)<Date.parse(e.resolution.expiresAt))) {
       conflict('The connected shipping rate changed. Prepare and approve a new offer.');
     }
     const carrier=await this.call(e,offer,'GetCarrierAccount',{CarrierAccountId:rate.carrierAccountId},'spend');

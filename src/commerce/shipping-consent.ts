@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import { conflict, digest, mutable, requireRole, type Exchange } from './domain.js';
+import { conflict, currentOffer, digest, mutable, requireRole, type Exchange } from './domain.js';
 import type { CommerceService } from './service.js';
 
 export function requireReturnPlanning(e:Exchange) {
   const plan=e.returnPlan, resolution=e.resolution;
   if(!plan || plan.shipping!=='none' || e.payment!=='paid' || !resolution || resolution.remedy!=='return'
-    || resolution.id!==plan.resolutionId || ![e.buyerId,e.sellerId].every(id=>resolution.approvedBy.includes(id))) {
+    || resolution.id!==plan.resolutionId || resolution.offerDigest!==digest(currentOffer(e))
+    || ![e.buyerId,e.sellerId].every(id=>resolution.approvedBy.includes(id))) {
     conflict('Both participants must agree to a return before preparing its shipping details.');
   }
   return plan;

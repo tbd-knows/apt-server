@@ -23,7 +23,7 @@ approved SDK harness, returning private-data-minimized carrier/price options.
 Authenticated production schema compatibility remains unverified. Exact connected
 offers, once-only paid label dispatch, private artifacts, tracking, and unused-postage
 refunds are now integrated into the worker and exercised with SDK/Postgres fixtures.
-Connected return preparation supports fresh consent, reversed private addresses, buyer packing and drop-off research. Return postage purchase remains incomplete. USPS Ground Advantage supports a verified retail Label Broker no-printer path with canonical provider-issued PNG/PDF printing artifacts; actual provider purchase and physical scan acceptance are still unverified. Hosted-service rates are explicitly live-provider evidence even when
+Unchanged paid postage can receive fresh two-owner permission after expiry or original-account reauthorization, reusing only its original never-dispatched operation; price changes require refund and a new sale. Connected return preparation supports fresh consent, reversed private addresses, buyer packing and drop-off research. Return postage purchase remains incomplete. USPS Ground Advantage supports a verified retail Label Broker no-printer path with canonical provider-issued PNG/PDF printing artifacts; actual provider purchase and physical scan acceptance are still unverified. Hosted-service rates are explicitly live-provider evidence even when
 the surrounding commerce exchange is in test mode.
 The [persistent single-host deployment](persistent-pilot-host.md) now includes
 stable private routes, three supervised services, HTTPS routing, provisioning and
