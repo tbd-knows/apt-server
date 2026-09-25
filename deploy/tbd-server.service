@@ -1,0 +1,25 @@
+[Unit]
+Description=TBD API and durable commerce worker
+PartOf=tbd-pilot.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=tbd
+Group=tbd
+WorkingDirectory=/opt/tbd/app
+Environment=HOME=/var/lib/tbd
+Environment=PATH=/opt/tbd/node/bin:/opt/tbd/hermes/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/tbd/node/bin/node --env-file=/etc/tbd/server.env --env-file=/etc/tbd/routing.env /opt/tbd/app/dist/server.js
+Restart=always
+RestartSec=10
+TimeoutStopSec=45
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tbd
+

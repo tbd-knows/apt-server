@@ -6,6 +6,7 @@
   "database": "disposable PostgreSQL",
   "model": "deterministic fixture; not live-model acceptance",
   "agentCards": "pass",
+  "hostReadOnlyProbes": "pass: both APIs and both A2A peer tokens; unauthenticated tasks denied",
   "approvedInquiryAndDecline": "pass",
   "receiverPrivateWake": "pass",
   "wrongKeyAndForeignMessage": "pass",
@@ -17,5 +18,5 @@
   "humanDecisionRequired": "pass",
   "buyerPrivateCanariesAbsentFromSellerModel": "pass",
   "publicResearch": "not run",
-  "testedAt": "2026-09-25T14:59:33.273Z"
+  "testedAt": "2026-09-25T17:57:19.164Z"
 }

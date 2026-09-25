@@ -21,6 +21,7 @@
     "revoke-founder": "node --env-file-if-exists=.env --import tsx src/admin/revoke-founder.ts",
     "test:e2e-live": "node --env-file-if-exists=.env --import tsx scripts/e2e-live.ts",
     "local:phone": "node --env-file-if-exists=.env --import tsx scripts/local-phone-stack.ts",
+    "host:config": "node --env-file-if-exists=.env --import tsx src/admin/pilot-host.ts",
     "test:hermes-capability": "tsx scripts/hermes-capability.ts",
     "test:hermes-a2a": "node --import tsx scripts/hermes-a2a-check.ts",
     "test:a2a-db": "node --import tsx scripts/a2a-db-check.ts",

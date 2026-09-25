@@ -139,8 +139,12 @@ export class HermesAgentRuntime implements AgentRuntime {
   }
 
   async health() {
-    const response = await fetch(`${this.config.baseUrl}/health`, { signal: AbortSignal.timeout(this.timeoutMs) });
-    if (!response.ok) throw new Error(`Hermes health returned ${response.status}`);
+    const mapped = this.config.topology === 'per_profile' ? Object.values(this.config.profileUrls ?? {}) : [];
+    const urls = [...new Set(mapped.length ? mapped : [this.config.baseUrl])];
+    await Promise.all(urls.map(async url => {
+      const response = await fetch(`${url.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(this.timeoutMs), redirect: 'error' });
+      if (!response.ok) throw new Error(`Hermes health returned ${response.status}`);
+    }));
   }
 }
 

@@ -31,6 +31,13 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Validate persistent host service units
+        run: |
+          sudo mkdir -p /opt/tbd/node/bin /opt/tbd/hermes/bin
+          sudo ln -s "$(command -v node)" /opt/tbd/node/bin/node
+          # Syntax/dependency verification only; this stub does not run Hermes.
+          sudo ln -s /usr/bin/true /opt/tbd/hermes/bin/hermes
+          systemd-analyze verify --man=no deploy/tbd-pilot.target deploy/tbd-server.service deploy/tbd-hermes@founder1.service deploy/tbd-hermes@founder2.service
       - run: npm run test:local-db
       - run: npm run test:a2a-db
       - run: npm run test:harness-db

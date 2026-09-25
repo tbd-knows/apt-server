@@ -24,6 +24,7 @@ import { MemoryService } from '../src/memory/service.js';
 import { MemoryMaterializer } from '../src/memory/materializer.js';
 import { PostgresMemoryRepository } from '../src/memory/repository.js';
 import { DISABLED_HERMES_TOOLSETS } from '../src/admin/service.js';
+import { checkHostEndpoints } from '../src/pilot-host.js';
 
 const databaseUrl = process.env.APT_LOCAL_DATABASE_URL ?? '';
 assert(URL.canParse(databaseUrl) && ['127.0.0.1','localhost','[::1]'].includes(new URL(databaseUrl).hostname), 'Disposable loopback database required');
@@ -102,7 +103,7 @@ const transport = new CommerceA2A(commerce, config.hermes);
 async function start(index: number) {
   const child = spawn(cli, ['--profile', profiles[index]!, 'gateway', 'run', '--force', '--accept-hooks'], {
     env: { ...process.env, HERMES_HOME: home, API_SERVER_ENABLED: 'true', API_SERVER_HOST: '127.0.0.1', API_SERVER_PORT: String(apiPorts[index]),
-      A2A_HOST: '127.0.0.1', A2A_PORT: String(a2aPorts[index]) }, stdio: ['ignore', 'ignore', 'pipe'] });
+      A2A_HOST: '127.0.0.1', A2A_PORT: String(a2aPorts[index]), A2A_AGENT_NAME: profiles[index]! }, stdio: ['ignore', 'ignore', 'pipe'] });
   children.push(child); child.stderr?.on('data', chunk => { diagnostics[index] = ((diagnostics[index] ?? '') + String(chunk)).slice(-8000); });
   await eventually(async () => {
     if (child.exitCode !== null) throw new Error(`Gateway ${index} exited: ${diagnostics[index]}`);
@@ -145,6 +146,15 @@ try {
   }
   await app.listen({ host: '127.0.0.1', port: bridgePort });
   const first = await start(0); await start(1);
+  await eventually(async () => {
+    try {
+      await checkHostEndpoints({ origin: `http://127.0.0.1:${bridgePort}`, routes: profiles.map((profileName,index) => ({
+        userId: actors[index]!, profileName, sessionId: '', instance: `founder${index+1}`, port: apiPorts[index]!,
+        url: `http://127.0.0.1:${apiPorts[index]}`, a2aPort: a2aPorts[index]!, a2aUrl: `http://127.0.0.1:${a2aPorts[index]}`,
+      })) }, secret);
+      return true;
+    } catch { return false; }
+  }, 'Authenticated host probes for both native gateways');
   const card = await (await fetch(`http://127.0.0.1:${a2aPorts[1]}/.well-known/agent-card.json`)).json() as { skills: { id: string }[] };
   assert.deepEqual(card.skills.map(s=>s.id), ['tbd-approved-commerce']);
   const before = calls.length;
@@ -215,7 +225,8 @@ try {
   const report = { hermesVersion: 'v2026.8.19', transport: 'native Hermes A2A adapter and protocol helpers',
     authentication: liveAuth ? 'two real Supabase test accounts; authenticated HTTP commands' : 'internal fixture identities',
     processes: 'two isolated gateways', database: 'disposable PostgreSQL', model: 'deterministic fixture; not live-model acceptance',
-    agentCards: 'pass', approvedInquiryAndDecline: 'pass', receiverPrivateWake: 'pass', wrongKeyAndForeignMessage: 'pass',
+    agentCards: 'pass', hostReadOnlyProbes: 'pass: both APIs and both A2A peer tokens; unauthenticated tasks denied',
+    approvedInquiryAndDecline: 'pass', receiverPrivateWake: 'pass', wrongKeyAndForeignMessage: 'pass',
     hostilePeerDoesNotInvokeModel: 'pass', receiptNoPrivateOutput: 'pass', duplicateNoSecondOwnerTurn: 'pass', restartPendingDelivery: 'pass',
     privateModelMcpPreparation: 'pass', humanDecisionRequired: 'pass', buyerPrivateCanariesAbsentFromSellerModel: 'pass', publicResearch, testedAt: new Date().toISOString() };
   await liveAuth?.close(); authClosed = true;

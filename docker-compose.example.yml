@@ -1,3 +1,6 @@
+# Illustrative topology only; not a complete deployment. The shared materializer
+# volume and Node MCP bridge are not wired across these containers. Use the
+# supported single-host plan in docs/persistent-pilot-host.md for the pilot.
 services:
   apt-server:
     build: .

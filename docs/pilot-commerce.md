@@ -25,6 +25,11 @@ offers, once-only paid label dispatch, private artifacts, tracking, and unused-p
 refunds are now integrated into the worker and exercised with SDK/Postgres fixtures.
 Connected return preparation supports fresh consent, reversed private addresses, buyer packing and drop-off research. Return postage purchase and no-printer paths remain incomplete. Hosted-service rates are explicitly live-provider evidence even when
 the surrounding commerce exchange is in test mode.
+The [persistent single-host deployment](persistent-pilot-host.md) now includes
+stable private routes, three supervised services, HTTPS routing, provisioning and
+restart procedures, and read-only checks for both authenticated agents. Its
+endpoint checks pass against the two actual local Hermes gateways. Deployment
+to a real Linux host and reboot/provider acceptance are still unverified.
 The founder selected seller-paid postage with Stripe reimbursement. Saved offer
 funding, exact approval disclosures, Stripe transfer/reversal and payout amounts
 now support it. The connected worker uses the seller account for approved postage;
