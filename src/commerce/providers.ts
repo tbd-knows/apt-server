@@ -95,7 +95,7 @@ export class StripeProvider {
       'payment_intent_data[transfer_data][amount]': String(settlement.sellerTransferAmount),
       'payment_intent_data[metadata][exchange_id]': exchange.id,
       'metadata[exchange_id]': exchange.id, 'metadata[version]': String(offer.version), 'metadata[operation_id]': operationId,
-      expires_at: String(Math.floor(Math.min(Date.parse(offer.expiresAt), Date.now() + 23 * 3_600_000) / 1000)),
+      expires_at: String(Math.floor(Math.min(Date.parse(offer.expiresAt)-(offer.connectedShipping?5*60_000:0), Date.now() + 23 * 3_600_000) / 1000)),
       success_url: `${this.config.publicUrl}/commerce/return`, cancel_url: `${this.config.publicUrl}/commerce/return`,
     }, operationId);
     return this.paymentFact(response, exchange, offer, operationId);

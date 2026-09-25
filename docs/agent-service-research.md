@@ -504,3 +504,57 @@ regular local hours, map, check time and expiry. This does not assert closest
 location, current opening, appointment, final offer, purchased postage or delivery.
 Connected offer publication, paid dispatch/reconciliation and tracking/refund/return
 integration remain required before this path can complete an exchange.
+
+## Exact connected-offer preparation and sharing
+
+`prepare_connected_offer` resolves a current verifiedDropoff ID into the confirmed
+item, authenticated rate, selected carrier and public location. All amounts and
+provider references come from server evidence; tax treatment and the existing fee
+subsidy come from operator configuration. The model cannot supply economics,
+account identity, source facts or approval. One current preparation is reused
+across retries. It is stored privately, with a digest over exact offer, connection
+and source binding, revision and a short review deadline.
+
+The seller's `share_connected_offer` human command checks draft identity/digest,
+revision, current rate/drop-off/consent, account access/generation, item and economics
+again inside the exchange transaction. It persists the exact offer and private
+shipping authorization together, clears approvals, and sends approved offer
+records through the normal A2A delivery path. The buyer cannot read or publish a
+private draft. Sharing reveals the approved item/photos and public drop-off, not
+private forms or the shipping account email. It is not sale/postage approval.
+
+Both founders then separately approve the published offer. Updated clients must
+acknowledge connected-service fulfillment permission as well as seller-paid postage
+reimbursement. The shared offer identifies Shippo, its endpoint, live-provider mode
+and the seller account role, with a random authorization reference. The account
+identity, connection generation and source records stay server-private. Approvals
+and checkout reject changed connection or private form versions.
+
+The short rate-selection freshness window remains 15 minutes. New authenticated
+rate receipts separately retain `purchaseBefore`, derived from original creation
+plus the provider's documented maximum seven-day rate age. Old receipts without
+that evidence require refresh. A freshly prepared offer lasts at most two hours,
+ends before the original provider deadline and request expiry, and needs more than
+40 minutes remaining when prepared. Its private sharing deadline remains bounded
+by the fresh location/rate/disclosure evidence. Checkout requires more than 36
+minutes left for a connected offer and ends five minutes before the offer deadline,
+leaving a margin for payment reconciliation and postage. These limits never extend
+the provider's rate age or establish that a stale price is still valid; canonical
+prepayment and prepurchase revalidation remain part of the pending paid driver.
+
+Sources: [Shippo transaction API](https://docs.goshippo.com/shippoapi/public-api/transactions/createtransaction)
+and [Stripe Checkout expiry](https://docs.stripe.com/api/checkout/sessions/create).
+
+The server explicitly refuses a connected Checkout command before collecting any
+money while connected postage execution is unavailable. Test-mode payment also
+cannot fund live service postage. Agent prerequisites include
+`connected_shipping_execution`; mobile shows the offer review and unavailable
+payment state. This is completed offer preparation/publication, not completed paid
+fulfillment. The legacy platform-account adapter cannot execute these offers.
+
+Real PostgreSQL tests cover actual private preparation through the agent surface,
+exact durable sharing and replay, seller-only access, revision and connection
+changes, hidden account/authorization context, separate two-owner approvals,
+old-client denial and no live postage from test payment. Unit tests cover original
+rate-age preservation, provider/request/offer deadlines and Stripe's fulfillment
+margin; mobile tests cover service/account/mode and fulfillment permission text.

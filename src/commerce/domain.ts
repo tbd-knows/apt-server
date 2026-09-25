@@ -51,6 +51,7 @@ export interface Offer {
   subsidy: string; taxTreatment: string;
   /** Missing only on historical platform-funded offers. Never reinterpret them. */
   postageFunding?: PostageFunding;
+  connectedShipping?: { authorizationId:string; provider:'shippo'; endpoint:string; providerMode:'live'; accountOwnerRole:'seller' };
 }
 export interface ApprovalBinding {
   actorId: string; operation: 'buy' | 'sell_and_postage'; exchangeId: string; version: number;
@@ -85,6 +86,8 @@ export interface PrivateInput {
   agentAction?: PreparedAction;
   discoveryPostcode?: string; discoveryVersion?: number;
   verifiedDropoff?: import('./verified-dropoff.js').VerifiedDropoff;
+  connectedOfferDraft?: import('./connected-offer.js').ConnectedOfferDraft;
+  connectedShipping?: Record<string,import('./connected-offer.js').ConnectedShipping>;
 }
 /** Preparations do not grant authority. The authenticated owner reviews the
  * exact command, and execution still uses all normal commerce guards. */
@@ -224,6 +227,8 @@ export function exchangeView(exchange: Exchange, userId: string) {
 }
 
 export const humanCommandSchema = z.discriminatedUnion('type', [
+  z.object({type:z.literal('share_connected_offer'),draftId:z.uuid(),draftDigest:z.string().length(64)}).strict(),
+  z.object({type:z.literal('dismiss_connected_offer'),draftId:z.uuid()}).strict(),
   z.object({ type: z.literal('propose_shipping_data'), connectionId: z.uuid() }).strict(),
   z.object({ type: z.literal('decide_shipping_data'), consentId: z.uuid(), consentDigest: z.string().length(64),
     approve: z.boolean(), acknowledgeServiceAccountAccess: z.boolean().optional() }).strict(),
@@ -232,7 +237,7 @@ export const humanCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('share_item'), item: itemSchema }).strict(),
   z.object({ type: z.literal('address'), address: addressSchema }).strict(),
   z.object({ type: z.literal('packing'), packing: packingSchema }).strict(),
-  z.object({ type: z.literal('approve'), binding: z.unknown(), acknowledgeSellerPostageReimbursement: z.literal(true).optional() }).strict(),
+  z.object({ type: z.literal('approve'), binding: z.unknown(), acknowledgeSellerPostageReimbursement: z.literal(true).optional(), acknowledgeConnectedShipping:z.literal(true).optional() }).strict(),
   z.object({ type: z.literal('checkout') }).strict(),
   z.object({ type: z.literal('quote') }).strict(),
   z.object({ type: z.literal('cancel'), reason: shortText }).strict(),

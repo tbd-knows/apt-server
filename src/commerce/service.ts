@@ -18,11 +18,12 @@ import { prepareShippingValidation,shippingValidationSchema } from './shipping-v
 import { prepareShippingOption,shippingOptionSchema } from './shipping-option.js';
 import { prepareShippingRates,shippingRatesSchema } from './shipping-rates.js';
 import { verifyDropoff,verifyDropoffSchema,verifiedDropoffView } from './verified-dropoff.js';
+import { prepareConnectedOffer,connectedOfferSchema,connectedOfferDraftView,shareConnectedOffer,requireConnectedOffer,type OfferEconomics } from './connected-offer.js';
 
 export class CommerceService {
   get research() { return new CommerceResearch(this); }
   constructor(readonly repository: CommerceRepository, readonly founders: readonly string[], readonly mode: Mode,
-    private readonly now: () => Date = () => new Date()) {
+    private readonly now: () => Date = () => new Date(),readonly offerEconomics:OfferEconomics|null=null) {
     if (founders.length !== 2 || new Set(founders).size !== 2 || founders.some(id => !z.uuid().safeParse(id).success)) {
       throw new Error('Configure exactly two distinct Auth UUIDs.');
     }
@@ -46,12 +47,15 @@ export class CommerceService {
     const operations = (await this.repository.pool.query(`select id,kind,state,attempts,provider_id as "providerId",
       case when kind='label_refund' then result->>'refundStatus' else null end as "labelRefundStatus"
       from pilot_operations where exchange_id=$1 order by created_at`, [id])).rows;
-    const {verifiedDropoff:_internalDropoff,...privateInput}=await this.repository.privateInput(e,actor);
+    const {verifiedDropoff:_internalDropoff,connectedShipping:_internalShipping,connectedOfferDraft,...privateInput}=await this.repository.privateInput(e,actor);
+    const verifiedDropoff=await verifiedDropoffView(this,actor,id);
     return { ...view, requestDigest: digest(e.request), privateInput,
-      verifiedDropoff:await verifiedDropoffView(this,actor,id),
+      verifiedDropoff,
+      connectedOfferDraft:connectedOfferDraftView(connectedOfferDraft,e.revision,this.now(),verifiedDropoff?.state==='current' && verifiedDropoff.id===connectedOfferDraft?.shipping.dropoffId),
       shippingData: await shippingDataView(this,e,actor,this.now()),
       operations, deliveries: await this.deliveries(actor, id), research: await this.research.list(actor,id),connections:await listConnections(this,actor,id),serviceActions:await listServiceActions(this,actor,id),
-      execution: { checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
+      execution: { connectedShippingReady:false,
+        checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
         returnLabelAvailable: actor === e.buyerId && !!e.returnPlan && ['label_ready','in_transit','delivered'].includes(e.returnPlan.shipping),
         labelAvailable: actor === e.sellerId && e.payment === 'paid' && !e.cancellationRequested && ['label_ready','in_transit','delivered'].includes(e.shipping) } };
   }
@@ -96,6 +100,17 @@ export class CommerceService {
         await this.repository.event(sql, e, actor, 'agent_action_approved', { actionId: action.id, digest: action.digest, command: action.command });
       }
       switch (command.type) {
+        case 'share_connected_offer': {
+          await shareConnectedOffer(this,sql,e,actor,command.draftId,command.draftDigest);
+          break;
+        }
+        case 'dismiss_connected_offer': {
+          requireRole(e,actor,'seller');
+          const mine=await this.repository.privateInput(e,actor,sql);
+          if(mine.connectedOfferDraft?.id!==command.draftId) conflict('The prepared offer changed.');
+          delete mine.connectedOfferDraft;await this.repository.savePrivate(sql,e,actor,mine);
+          break;
+        }
         case 'propose_shipping_data':
           await proposeShippingData(this,sql,e,actor,command.connectionId,now);
           break;
@@ -199,6 +214,10 @@ export class CommerceService {
           break;
         }
         case 'approve': {
+          if(currentOffer(e).connectedShipping && command.acknowledgeConnectedShipping!==true) {
+            conflict('Review the connected shipping account and fulfillment permission before approving.');
+          }
+          if(currentOffer(e).connectedShipping) await requireConnectedOffer(this,sql,e,currentOffer(e));
           if (currentOffer(e).postageFunding === 'seller_reimbursed' && command.acknowledgeSellerPostageReimbursement !== true) {
             conflict('Review seller-paid postage and Stripe reimbursement in the updated app before approving.');
           }
@@ -211,8 +230,11 @@ export class CommerceService {
         case 'checkout': {
           requireRole(e, actor, 'buyer');
           const offer = currentOffer(e);
+          if(offer.connectedShipping && e.mode!==offer.connectedShipping.providerMode) conflict('Live postage cannot be purchased using test-mode payment.');
+          if(offer.connectedShipping) await requireConnectedOffer(this,sql,e,offer);
+          if(offer.connectedShipping) throw new AppError('PROVIDER_NOT_READY','Connected postage execution must be available before payment can begin.');
           if (e.stage !== 'offered' || e.approvals.length !== 2 || e.approvals.some(a => a.digest !== digest(offer))) conflict('Both people must approve the current offer.');
-          if (Date.parse(offer.expiresAt) <= now.getTime() + 31 * 60_000) conflict('The quote is too close to expiry. Refresh the offer before checkout.');
+          if (Date.parse(offer.expiresAt) <= now.getTime() + (offer.connectedShipping?36:31) * 60_000) conflict('The quote is too close to expiry. Refresh the offer before checkout.');
           const buyer = await this.repository.privateInput(e, actor, sql);
           if (buyer.budget === null || buyer.budget < offer.buyerTotal) conflict('The total exceeds your private all-in budget.');
           await this.repository.reserve(sql, e, offer.expiresAt);
@@ -462,7 +484,7 @@ export class CommerceService {
         command: preparedCommandSchema, explanation: z.string().trim().min(1).max(500) }).strict(),
       z.object({ action: z.literal('research'), exchangeId: z.uuid(), research: researchInputSchema }).strict(),
       serviceActionSchema,serviceHistorySchema,
-      shippingValidationSchema,shippingRatesSchema,shippingOptionSchema,verifyDropoffSchema,
+      shippingValidationSchema,shippingRatesSchema,shippingOptionSchema,verifyDropoffSchema,connectedOfferSchema,
     ]).parse(raw);
     const actor = context.userId;
     if (command.action === 'state') {
@@ -472,8 +494,10 @@ export class CommerceService {
         if (e.mode !== this.mode) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
         const [buyer, seller] = await Promise.all([this.repository.privateInput(e, e.buyerId), this.repository.privateInput(e, e.sellerId)]);
         const serviceActions=await listServiceActions(this,actor,e.id);
+        const verifiedDropoff=await verifiedDropoffView(this,actor,e.id),prepared=(actor===e.sellerId?seller:buyer).connectedOfferDraft;
         return { ...view, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller,this.now()),
-          verifiedDropoff:await verifiedDropoffView(this,actor,e.id),
+          verifiedDropoff,
+          connectedOfferDraft:connectedOfferDraftView(prepared,e.revision,this.now(),verifiedDropoff?.state==='current' && verifiedDropoff.id===prepared?.shipping.dropoffId),
           shippingData: await shippingDataView(this,e,actor,this.now()),
           deliveries: await this.deliveries(actor, e.id), research: await this.research.list(actor,e.id),connections:await listConnections(this,actor,e.id),serviceActions:serviceActions.slice(-5),serviceActionHistoryCursor:serviceActions.length>5?serviceActions.at(-5)!.id:null };
       }));
@@ -488,6 +512,7 @@ export class CommerceService {
     if (command.action === 'prepare_service_action') return prepareServiceAction(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_option') return prepareShippingOption(this,actor,context.requestMessageId,command);
     if (command.action === 'verify_dropoff') return verifyDropoff(this,actor,command);
+    if (command.action === 'prepare_connected_offer') return prepareConnectedOffer(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_rates') return prepareShippingRates(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_validation') return prepareShippingValidation(this,actor,context.requestMessageId,command);
     const key = command.action === 'ask_owner' ? `agent:${context.requestMessageId}:${digest(command)}` : `agent-action:${context.requestMessageId}`;

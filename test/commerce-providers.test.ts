@@ -74,6 +74,15 @@ describe('provider contracts', () => {
     await expect(new StripeProvider(config, malformed).checkout(exchange, { ...reimbursed, buyerTotal: 5000 }, 'op_fixture')).rejects.toThrow('settlement');
     expect(malformed).not.toHaveBeenCalled();
   });
+  it('leaves a fixed fulfillment margin after connected-offer Checkout without extending the rate deadline',async()=>{
+    const connected:Offer={...offer,postageFunding:'seller_reimbursed',connectedShipping:{authorizationId:'fixture',provider:'shippo',
+      endpoint:'https://mcp.shippo.com/',providerMode:'live',accountOwnerRole:'seller'}};
+    const fetcher=fetchObjects({id:'acct_platform'},{charges_enabled:true,capabilities:{transfers:'active'}},{...session(),status:'open',payment_status:'unpaid'});
+    await new StripeProvider(config,fetcher).checkout(exchange,connected,'op_fixture');
+    const fields=new URLSearchParams(String(fetcher.mock.calls[2]![1]!.body));
+    expect(Number(fields.get('expires_at'))).toBe(Math.floor(Date.parse(connected.expiresAt)/1000)-300);
+    expect(Number(fields.get('expires_at'))).toBeGreaterThan(Date.now()/1000+30*60);
+  });
   it('attributes only the matching automatic bank payout, using the connected account', async () => {
     const fact = await new StripeProvider(config, fetchObjects(session(), intent())).retrieve('cs_fixture', exchange, offer, 'op_fixture');
     const fetcher = fetchObjects({ data: [{ id: 'po_manual', automatic: false }, { id: 'po_fixture', automatic: true, currency: 'usd', livemode: false, status: 'paid', type: 'bank_account' }] }, { data: [{ source: 'py_fixture', currency: 'usd', amount: 5000 }] });

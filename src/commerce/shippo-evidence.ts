@@ -142,6 +142,7 @@ export interface ShippoRateEvidence {
   rateId: string; shipmentId: string; carrierAccountId: string; carrierName: string;
   serviceToken: string; serviceName: string; amount: number; currency: 'USD'; estimatedDays: number | null;
   expiresAt: string;
+  purchaseBefore?: string;
 }
 export function shippoRate(value: unknown, binding: { shipmentId: string; accountOwner: string; mode: Mode }, now: Date): ShippoRateEvidence {
   const rate = parse(rateSchema, value);
@@ -153,7 +154,8 @@ export function shippoRate(value: unknown, binding: { shipmentId: string; accoun
   requireEvidence(created <= now.getTime() + 60_000 && expires > now.getTime());
   return { rateId: rate.object_id, shipmentId: rate.shipment, carrierAccountId: rate.carrier_account,
     carrierName: rate.provider, serviceToken: rate.servicelevel.token, serviceName: rate.servicelevel.name,
-    amount: shippoMinorUnits(rate.amount), currency: 'USD', estimatedDays: rate.estimated_days ?? null, expiresAt: new Date(expires).toISOString() };
+    amount: shippoMinorUnits(rate.amount), currency: 'USD', estimatedDays: rate.estimated_days ?? null, expiresAt: new Date(expires).toISOString(),
+    purchaseBefore:new Date(created+7*86_400_000).toISOString() };
 }
 export type ShippoShipmentEvidence =
   | { state: 'pending' | 'error'; shipmentId: string }

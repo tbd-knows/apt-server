@@ -48,7 +48,16 @@ async function context(commerce:CommerceService,sql:PoolClient,actor:string,inpu
   const binding=digest({exchangeId:e.id,mode:e.mode,actor,carrierActionId:row.id,option,rate,
     connectionId:row.connection_id,generation:row.generation,endpoint:row.endpoint,consent:e.shippingData,
     discoveryVersion:mine.discoveryVersion ?? 0,researchId:input.researchId,sourceId:input.sourceId,sourceUrl:source.url});
-  return {e,mine,binding,expiresAt,request:{sourceUrl:source.url,carrierToken:option.carrierToken,serviceToken:rate.serviceToken,packing:mine.packing}};
+  return {e,mine,binding,expiresAt,row,rate,rates,option,request:{sourceUrl:source.url,carrierToken:option.carrierToken,serviceToken:rate.serviceToken,packing:mine.packing}};
+}
+export async function requireVerifiedDropoff(commerce:CommerceService,sql:PoolClient,actor:string,exchangeId:string,revision:number,id:string) {
+  const e=await commerce.repository.get(exchangeId,actor,sql,true);
+  const record=(await commerce.repository.privateInput(e,actor,sql)).verifiedDropoff;
+  if(!record || record.id!==id || Date.parse(record.expiresAt)<=Date.now()) conflict('Verify a current compatible drop-off first.');
+  const checked=await context(commerce,sql,actor,{action:'verify_dropoff',exchangeId,revision,
+    carrierActionId:record.carrierActionId,researchId:record.researchId,sourceId:record.sourceId});
+  if(checked.binding!==record.binding) conflict('The drop-off evidence changed. Verify it again.');
+  return {...checked,record};
 }
 function view(record:VerifiedDropoff,current:boolean) {
   return {id:record.id,carrierActionId:record.carrierActionId,sourceUrl:record.sourceUrl,expiresAt:record.expiresAt,

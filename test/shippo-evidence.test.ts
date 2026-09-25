@@ -92,6 +92,14 @@ describe('Shippo authenticated response evidence (fixtures, no provider requests
     raw[field] = replacements[field];
     expect(() => shippoShipment(receipt(raw), binding, now, 'shipment_123')).toThrow('Shipping evidence');
   });
+  it('keeps the short review window separate from the original provider purchase deadline',()=>{
+    const fresh=shippoRate(rate(),{shipmentId:'shipment_123',accountOwner:binding.accountOwner,mode:'live'},now);
+    expect(fresh.expiresAt).toBe('2026-09-24T12:15:00.000Z');
+    expect(fresh.purchaseBefore).toBe('2026-10-01T12:00:00.000Z');
+    const later=shippoRate(rate(),{shipmentId:'shipment_123',accountOwner:binding.accountOwner,mode:'live'},new Date('2026-09-25T12:00:00Z'));
+    expect(later.purchaseBefore).toBe(fresh.purchaseBefore);
+    expect(()=>shippoRate(rate(),{shipmentId:'shipment_123',accountOwner:binding.accountOwner,mode:'live'},new Date(fresh.purchaseBefore!))).toThrow();
+  });
   it('tolerates whitespace/case and dimension order without accepting changed postal routing', () => {
     const raw = shipment(); raw.address_from.street1 = ' 1 ORIGIN  LANE '; raw.parcels[0]!.length = '6'; raw.parcels[0]!.height = '12';
     expect(shippoShipment(receipt(raw), binding, now).state).toBe('rated');

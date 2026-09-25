@@ -1,5 +1,6 @@
 /** Real disposable Postgres; no model, third-party disclosure or purchase. */
 import assert from 'node:assert/strict';
+import { prepareConnectedOffer } from '../src/commerce/connected-offer.js';
 import { verifyDropoff } from '../src/commerce/verified-dropoff.js';
 import { verifyPublicDropoff } from '../src/commerce/public-dropoff.js';
 import { locationFixture,locationUrl } from '../test/fixtures/public-dropoff.js';
@@ -24,7 +25,8 @@ const pool = new pg.Pool({ connectionString: url });
 const A = '11111111-1111-4111-8111-111111111111', B = '22222222-2222-4222-8222-222222222222';
 const repository = new CommerceRepository(pool);
 let now = new Date();
-const service = () => new CommerceService(repository,[A,B],'test',()=>now);
+const economics={taxAmount:0,taxTreatment:'Fixture tax treatment',subsidy:'Fixture processing subsidy'};
+const service = () => new CommerceService(repository,[A,B],'test',()=>now,economics);
 const command = async (actor:string,id:string,input:unknown) => {
   const view = await service().get(actor,id);
   return service().command(actor,id,randomUUID(),view.revision,input);
@@ -261,6 +263,55 @@ try {
   assert(JSON.stringify(sellerModel).includes(location.id));assert(!JSON.stringify(sellerModel).includes('CANARY'));
   const privateRecord=(await repository.privateInput(await repository.get(draft.id,B),B)).verifiedDropoff!;
   assert(!JSON.stringify(sellerModel).includes(privateRecord.binding));
+  const offerInput=async()=>({action:'prepare_connected_offer' as const,exchangeId:draft.id,revision:(await service().get(B,draft.id)).revision,dropoffId:location.id});
+  await assert.rejects(prepareConnectedOffer(service(),A,randomUUID(),await offerInput()),/other participant/);
+  await assert.rejects(prepareConnectedOffer(new CommerceService(repository,[A,B],'test'),B,randomUUID(),await offerInput()),/tax treatment/);
+  await assert.rejects(service().invoke(context,{...await offerInput(),shippingAmount:1}));
+  await assert.rejects(service().invoke(context,{action:'share_connected_offer',exchangeId:draft.id,draftId:randomUUID(),draftDigest:'a'.repeat(64)}));
+  const offerContext={...context,requestMessageId:randomUUID()};
+  let preparedOffer=await service().invoke(offerContext,await offerInput()) as NonNullable<Awaited<ReturnType<typeof prepareConnectedOffer>>>;
+  assert.equal(preparedOffer.offer.postageFunding,'seller_reimbursed');assert.equal(preparedOffer.offer.buyerTotal,5805);
+  assert.equal(preparedOffer.settlement.sellerTransferAmount,5805);assert.equal(preparedOffer.settlement.postageReimbursement,805);
+  assert.equal(preparedOffer.offer.connectedShipping?.providerMode,'live');
+  assert(Date.parse(preparedOffer.offer.expiresAt)>Date.now()+31*60_000);
+  assert(Date.parse(preparedOffer.expiresAt)<=Date.parse(location.expiresAt));
+  assert.equal((await service().get(A,draft.id)).offer,null);assert.equal((await service().get(A,draft.id)).connectedOfferDraft,null);
+  assert.equal((await prepareConnectedOffer(service(),B,offerContext.requestMessageId,await offerInput()))?.id,preparedOffer.id);
+  assert.equal((await prepareConnectedOffer(service(),B,randomUUID(),await offerInput()))?.id,preparedOffer.id);
+  const currentModel=await service().invoke(context,{action:'state',exchangeId:draft.id});
+  for(const secret of ['PRIVATE_ACCOUNT_CANARY','PRIVATE_ADDRESS_CANARY',privateRecord.binding]) assert(!JSON.stringify(currentModel).includes(secret));
+  assert(!JSON.stringify((await service().get(B,draft.id)).privateInput).includes('connectedShipping'));
+  await command(B,draft.id,{type:'message',kind:'question',text:'Confirming the prepared offer.'});
+  assert.equal((await service().get(B,draft.id)).connectedOfferDraft?.state,'stale');
+  await assert.rejects(command(B,draft.id,{type:'share_connected_offer',draftId:preparedOffer.id,draftDigest:preparedOffer.digest}),/changed or expired/);
+  preparedOffer=(await prepareConnectedOffer(service(),B,randomUUID(),await offerInput()))!;
+  const publish={type:'share_connected_offer',draftId:preparedOffer.id,draftDigest:preparedOffer.digest};
+  await assert.rejects(command(A,draft.id,publish),/other participant/);
+  await assert.rejects(command(B,draft.id,{...publish,draftDigest:'f'.repeat(64)}),/changed or expired/);
+  await pool.query("update pilot_connections set state='revoked' where id=$1",[connection]);
+  assert.equal((await service().get(B,draft.id)).connectedOfferDraft?.state,'stale');
+  await assert.rejects(command(B,draft.id,publish),/connection changed/);
+  await pool.query("update pilot_connections set state='connected' where id=$1",[connection]);
+  const versionBefore=(await service().get(B,draft.id)).revision,key=randomUUID();
+  await service().command(B,draft.id,key,versionBefore,publish);
+  await service().command(B,draft.id,key,versionBefore,publish);
+  const shared=await service().get(A,draft.id);
+  assert.deepEqual(shared.offer,preparedOffer.offer);assert.equal(shared.approvalCount,0);
+  assert.equal((await repository.get(draft.id,B)).offers.length,1);
+  assert.equal((await service().get(B,draft.id)).connectedOfferDraft,null);
+  const privateShipping=(await repository.privateInput(await repository.get(draft.id,B),B)).connectedShipping!['1']!;
+  assert.equal(privateShipping.accountOwner,'PRIVATE_ACCOUNT_CANARY');
+  assert(!JSON.stringify(shared).includes('PRIVATE_ACCOUNT_CANARY'));
+  for(const actor of [A,B]) {
+    const view=await service().get(actor,draft.id);
+    await assert.rejects(command(actor,draft.id,{type:'approve',binding:view.approval,acknowledgeSellerPostageReimbursement:true}),/connected shipping/);
+    await pool.query("update pilot_connections set state='revoked' where id=$1",[connection]);
+    await assert.rejects(command(actor,draft.id,{type:'approve',binding:view.approval,acknowledgeSellerPostageReimbursement:true,acknowledgeConnectedShipping:true}),/account, item or private/);
+    await pool.query("update pilot_connections set state='connected' where id=$1",[connection]);
+    await command(actor,draft.id,{type:'approve',binding:view.approval,acknowledgeSellerPostageReimbursement:true,acknowledgeConnectedShipping:true});
+  }
+  await assert.rejects(command(A,draft.id,{type:'checkout'}),/test-mode payment/);
+  assert.equal((await service().get(A,draft.id)).payment,'unpaid');
   optionInput.revision=(await service().get(B,draft.id)).revision;
   const expiredSource=structuredClone(stored);expiredSource.structuredContent.shippingRates.shipment.rates[0].expiresAt='2000-01-01T00:00:00Z';
   await pool.query('update pilot_service_actions set result=$2 where id=$1',[poll.id,expiredSource]);
@@ -291,6 +342,16 @@ try {
   const rejected=await connections.decideAction(B,foreign.id,foreign.digest,true,'free_shipping_rates');
   assert.equal(rejected.state,'returned_error');assert.equal(rejected.result,null);
   assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[draft.id])).rows[0].n,0);
-  const final=await service().get(B,draft.id);assert.equal(final.verifiedDropoff?.state,'stale');assert.equal(final.payment,'unpaid');assert.equal(final.shipping,'none');assert.equal(final.offer,null);
-  process.stdout.write('PASS: approved private SDK rate creation/retrieval, two validated addresses, exact prices, active selected-carrier SDK verification, official public drop-off binding/expiry/area-change race and replay, expiry, live-mode evidence, privacy, duplicate/uncertain dispatch, consent withdrawal race, account binding; no external calls or purchases.\n');
+  const final=await service().get(B,draft.id);assert.equal(final.verifiedDropoff?.state,'stale');assert.equal(final.payment,'unpaid');assert.equal(final.shipping,'none');assert.equal(final.offer?.postageFunding,'seller_reimbursed');
+  // Move this disposable fixture (never a real exchange) to live commerce to
+  // prove the unfinished execution gate refuses even fully approved live terms.
+  const liveExchange=await repository.get(draft.id,B);liveExchange.mode='live';
+  await pool.query('update pilot_exchanges set mode=$2,data=$3 where id=$1',[draft.id,'live',liveExchange]);
+  await pool.query('update pilot_connections set mode=$2 where id=$1',[connection,'live']);
+  const liveService=new CommerceService(repository,[A,B],'live',()=>new Date(),economics);
+  const liveView=await liveService.get(A,draft.id);
+  await assert.rejects(liveService.command(A,draft.id,randomUUID(),liveView.revision,{type:'checkout'}),/postage execution must be available/);
+  assert.equal((await liveService.get(A,draft.id)).payment,'unpaid');
+  assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[draft.id])).rows[0].n,0);
+  process.stdout.write('PASS: approved private SDK rate creation/retrieval, two validated addresses, exact prices, active selected-carrier SDK verification, official public drop-off binding/expiry/area-change race and replay, expiry, live-mode evidence, private connected offer preparation, explicit seller sharing, separate exact approvals, live-postage/test-payment denial, privacy, duplicate/uncertain dispatch, consent withdrawal race, account binding; no external calls or purchases.\n');
 } finally {await pool.end();}

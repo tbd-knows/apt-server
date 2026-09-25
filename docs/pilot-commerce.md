@@ -312,3 +312,14 @@ return claims, generic finder pages and unsupported services. No postage is boug
 and no appointment is booked by this check. The exact connected offer and paid
 lifecycle are still unfinished. See `agent-service-research.md` for the live public
 source probe and deterministic/database evidence boundaries.
+
+### Connected offer review
+
+A seller agent can now prepare exact seller-reimbursed terms from a verified
+location/rate/carrier. The seller reviews the item, total, reimbursement, tax/fee
+treatment, printing, drop-off and deadlines before explicitly sharing the offer.
+Both founders must separately approve its exact terms and connected-service
+permission. Service account credentials and identity are not shared with the buyer
+or model. Stale draft/connection/form evidence is rejected. Test-mode payments cannot
+fund live postage. Payment is explicitly unavailable for connected offers until the
+paid connected shipping driver is complete; no fallback platform postage is used.

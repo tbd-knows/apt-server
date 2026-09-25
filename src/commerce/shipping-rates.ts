@@ -15,7 +15,8 @@ export const shippingRatesSchema=z.object({action:z.literal('prepare_shipping_ra
 const id=z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
 const rate=z.object({rateId:id,shipmentId:id,carrierAccountId:id,carrierName:z.string().min(1).max(120),
   serviceToken:id,serviceName:z.string().min(1).max(200),amount:z.number().int().min(0).max(1_000_000),
-  currency:z.literal('USD'),estimatedDays:z.number().int().min(0).max(365).nullable(),expiresAt:z.iso.datetime({offset:true})});
+  currency:z.literal('USD'),estimatedDays:z.number().int().min(0).max(365).nullable(),expiresAt:z.iso.datetime({offset:true}),
+  purchaseBefore:z.iso.datetime({offset:true}).optional()});
 const evidence=z.discriminatedUnion('state',[
   z.object({state:z.literal('rated'),shipmentId:id,parcelId:id,rates:z.array(rate).min(1).max(100),qrRequested:z.boolean()}),
   z.object({state:z.enum(['pending','error']),shipmentId:id}),
