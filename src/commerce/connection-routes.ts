@@ -11,8 +11,10 @@ export function connectionRoutes(app:FastifyInstance,connections:CommerceConnect
       z.object({digest:z.string().length(64),approve:z.literal(true),approveCapabilityDiscovery:z.literal(true)}).strict(),
       z.object({digest:z.string().length(64),approve:z.literal(true),approveFreeAddressValidation:z.literal(true)}).strict(),
       z.object({digest:z.string().length(64),approve:z.literal(true),approveFreeShippingRates:z.literal(true)}).strict(),
+      z.object({digest:z.string().length(64),approve:z.literal(true),approveFreeShippingOption:z.literal(true)}).strict(),
       z.object({digest:z.string().length(64),approve:z.literal(false)}).strict(),
     ]).parse(r.body);
+    if('approveFreeShippingOption' in body) return connections.decideAction(r.userId!,id.parse(r.params).id,body.digest,body.approve,'free_shipping_option');
     if('approveFreeShippingRates' in body) return connections.decideAction(r.userId!,id.parse(r.params).id,body.digest,body.approve,'free_shipping_rates');
     if('approveFreeAddressValidation' in body) return connections.decideAction(r.userId!,id.parse(r.params).id,body.digest,body.approve,'free_address_validation');
     return connections.decideAction(r.userId!,id.parse(r.params).id,body.digest,body.approve);

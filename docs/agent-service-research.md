@@ -415,3 +415,19 @@ and stable paging when timestamps tie. This lets an agent recover an earlier
 operation description or pending shipment without inventing a reference or
 repeating an external operation. Real-database tests cover complete traversal,
 timestamp ties, foreign/unknown cursors, mode isolation and state continuation.
+
+
+## Checking an agent-selected carrier option
+
+`prepare_shipping_option` takes an actual rateActionId/rateId and a stored
+GetCarrierAccount description. The server resolves the carrier account from the
+verified rate; the model cannot supply an arbitrary account ID. A separate human
+review permits a free read, with no address disclosure, account change, rate
+acceptance or postage purchase. Source owner/exchange/mode/connection generation,
+current consent and rate expiry are checked again immediately before dispatch.
+
+The authenticated reply must match the selected account, established Shippo
+account owner and live mode and report active=true. Only carrier token, rate/account
+references and explicit live-provider mode are retained; account parameters and
+raw replies are discarded. An inactive/mismatched account remains unresolved.
+A carrier identity does not itself prove printing or drop-off compatibility.

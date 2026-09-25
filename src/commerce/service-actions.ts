@@ -7,6 +7,7 @@ import type { CommerceService } from './service.js';
 import type { McpInspection } from './mcp-inspection.js';
 import type { ServiceInvocation,ServiceResult } from './mcp-execution.js';
 import { requireCapabilityDiscovery } from './service-policy.js';
+import { shippingOptionResultView } from './shipping-option.js';
 import { shippingRatesResultView } from './shipping-rates.js';
 
 export const serviceActionSchema=z.object({action:z.literal('prepare_service_action'),exchangeId:z.uuid(),connectionId:z.uuid(),
@@ -19,13 +20,13 @@ export interface ServiceActionRow {
   result:ServiceResult['result']|null;approved_at:Date|null;expires_at:Date;created_at:Date;updated_at:Date;
 }
 export const serviceActionView=(row:ServiceActionRow)=>({id:row.id,connectionId:row.connection_id,endpoint:row.endpoint,
-  invocation:row.invocation.shippingRates ? {tool:{name:row.invocation.tool.name,description:'Compare approved shipping rates'},
+  invocation:row.invocation.shippingOption ? {tool:{name:row.invocation.tool.name,description:'Check the selected rate carrier account'},arguments:{operation:'GetCarrierAccount',rateId:row.invocation.shippingOption.rateId}} : row.invocation.shippingRates ? {tool:{name:row.invocation.tool.name,description:'Compare approved shipping rates'},
     arguments:{operation:row.invocation.shippingRates.sourceActionId?'GetShipment':'CreateShipment',privateInput:'Resolved from approved private forms; omitted from this view'}} : row.invocation.shippingValidation ? {tool:{name:row.invocation.tool.name,description:'Validate an approved private shipping address'},
     arguments:{operation:'ValidateAddress',privateInput:'Resolved from the approved private form; omitted from agent and service-action projections'}} : row.invocation,
   explanation:row.explanation,digest:row.digest,state:row.state,
-  result:row.invocation.shippingRates ? shippingRatesResultView(row.result) : row.invocation.shippingValidation ? validationResultView(row.result) : row.result,
+  result:row.invocation.shippingOption ? shippingOptionResultView(row.result) : row.invocation.shippingRates ? shippingRatesResultView(row.result) : row.invocation.shippingValidation ? validationResultView(row.result) : row.result,
   expiresAt:row.expires_at,updatedAt:row.updated_at,authority:'untrusted_service_result' as const,
-  purpose:row.invocation.shippingRates ? 'free_shipping_rates' as const : row.invocation.shippingValidation ? 'free_address_validation' as const : 'capability_discovery_only' as const});
+  purpose:row.invocation.shippingOption ? 'free_shipping_option' as const : row.invocation.shippingRates ? 'free_shipping_rates' as const : row.invocation.shippingValidation ? 'free_address_validation' as const : 'capability_discovery_only' as const});
 function validationResultView(result:ServiceActionRow['result']):ServiceActionRow['result'] {
   const status=result?.structuredContent?.addressValidation;
   return typeof status==='string' && ['valid','invalid','correction_required'].includes(status)

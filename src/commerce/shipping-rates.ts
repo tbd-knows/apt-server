@@ -28,6 +28,14 @@ export function shippingRatesResultView(result:ServiceActionRow['result']):Servi
   const parsed=storedEvidence.safeParse(result?.structuredContent?.shippingRates);
   return parsed.success ? {text:[],omittedContentTypes:[],structuredContent:{shippingRates:{providerMode:'live',shipment:parsed.data.shipment}}} : null;
 }
+/** Server-only source for a selected option. Never accept this record from a model. */
+export function ratedShippingSource(row:ServiceActionRow) {
+  const parsed=storedEvidence.safeParse(row.result?.structuredContent?.shippingRates);
+  if(row.state!=='returned' || !row.invocation.shippingRates || !parsed.success || parsed.data.shipment.state!=='rated') {
+    conflict('Choose a rate from a verified completed lookup.');
+  }
+  return {...parsed.data,shipment:parsed.data.shipment};
+}
 export function shippingRatesReceipt(receipt:ServiceResult,binding:ShippoShipmentBinding,expectedShipmentId?:string) {
   // The initial account identity comes from this connection's authenticated
   // response, never model input. Subsequent retrieval pins that identity.

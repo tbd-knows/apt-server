@@ -10,6 +10,7 @@ import { CommerceConnections } from '../src/commerce/connections.js';
 import { ConnectionSecrets } from '../src/commerce/connection-secrets.js';
 import { executeMcp } from '../src/commerce/mcp-execution.js';
 import { shippoAddressArguments } from '../src/commerce/shippo-evidence.js';
+import { prepareShippingOption } from '../src/commerce/shipping-option.js';
 import { prepareShippingRates } from '../src/commerce/shipping-rates.js';
 import { shippoOperationMetadata } from '../src/commerce/shippo-evidence.js';
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -106,10 +107,11 @@ try {
   const validationDescription=await describe('ValidateAddress','read',Object.fromEntries(Object.keys(shippoAddressArguments(privateInputs.destination)).map(key=>[key,'string'])));
   const creationDescription=await describe('CreateShipment','write',{address_from:'object',address_to:'object',parcels:'array',metadata:'string',async:'boolean',extra:'object'});
   const retrievalDescription=await describe('GetShipment','read',{ShipmentId:'string'});
+  const carrierDescription=await describe('GetCarrierAccount','read',{CarrierAccountId:'string'});
   const root='r'.repeat(32),sealed=new ConnectionSecrets(root).seal(JSON.stringify([connection,B,draft.id,'test',endpoint]),{tokens:{access_token:'TOKEN_CANARY',token_type:'Bearer'}});
   await pool.query("update pilot_connections set credentials=$2,inspection=$3,access_expires_at=now()+interval '1 hour' where id=$1",
     [connection,sealed,{status:'inspected',transport:'streamable_http',tools:[read,write],authority:'untrusted_capabilities_only'}]);
-  let expectedAction='',creationCalls=0,retrievalCalls=0,failAfterSend=false,foreignAccount=false;
+  let expectedAction='',creationCalls=0,retrievalCalls=0,failAfterSend=false,foreignAccount=false,carrierActive=true,carrierCalls=0;
   let onList:(()=>Promise<void>)|undefined;
   let originalCreation:Record<string,any>={};
   const fetch:FetchLike=async(_url,init)=>{
@@ -132,6 +134,9 @@ try {
         originalCreation=args;
         if(failAfterSend) throw new Error('PRIVATE_REMOTE_FAILURE');
         payload={...args,object_id:'shipment_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,status:'WAITING',rates:[]};
+      } else if(operation==='GetCarrierAccount') {
+        carrierCalls++;assert.equal(message.params.name,read.name);assert.deepEqual(args,{CarrierAccountId:'carrier_fixture'});
+        payload={object_id:'carrier_fixture',object_owner:'PRIVATE_ACCOUNT_CANARY',test:false,active:carrierActive,carrier:'usps',parameters:{password:'PRIVATE_CARRIER_SECRET_CANARY'}};
       } else {
         assert.equal(operation,'GetShipment');assert.equal(message.params.name,read.name);assert.deepEqual(args,{ShipmentId:'shipment_fixture'});retrievalCalls++;
         payload={...originalCreation,object_id:'shipment_fixture',object_owner:foreignAccount?'ANOTHER_ACCOUNT':'PRIVATE_ACCOUNT_CANARY',test:false,status:'SUCCESS',
@@ -190,6 +195,31 @@ try {
     const state=await service().invoke({userId:actor,runId:randomUUID(),requestMessageId:randomUUID()},{action:'state',exchangeId:draft.id});
     for(const secret of ['PRIVATE_ADDRESS_CANARY','PRIVATE_ACCOUNT_CANARY','TOKEN_CANARY']) assert(!JSON.stringify(state).includes(secret));
   }
+  const optionInput={action:'prepare_shipping_option' as const,exchangeId:draft.id,revision:(await service().get(B,draft.id)).revision,
+    rateActionId:poll.id,rateId:'rate_fixture',descriptionActionId:carrierDescription};
+  await assert.rejects(prepareShippingOption(service(),A,randomUUID(),optionInput),/other participant/);
+  await assert.rejects(prepareShippingOption(service(),B,randomUUID(),{...optionInput,rateId:'invented'}),/actual returned rate/);
+  await assert.rejects(prepareShippingOption(service(),B,randomUUID(),{...optionInput,descriptionActionId:creationDescription}),/unsupported format/);
+  await assert.rejects(prepareShippingOption(service(),B,randomUUID(),{...optionInput,CarrierAccountId:'invented'}));
+  const option=await prepareShippingOption(service(),B,randomUUID(),optionInput);expectedAction=option.id;
+  assert.equal(option.purpose,'free_shipping_option');assert(!JSON.stringify(option).includes('CANARY'));
+  await assert.rejects(connections.decideAction(B,option.id,option.digest,true,'free_shipping_rates'),/correct service action purpose/);
+  const checked=await connections.decideAction(B,option.id,option.digest,true,'free_shipping_option');
+  assert.equal(checked.state,'returned');assert.equal(carrierCalls,1);
+  assert.deepEqual(checked.result?.structuredContent?.shippingOption,{rateId:'rate_fixture',carrierAccountId:'carrier_fixture',carrierToken:'usps',sourceActionId:poll.id,providerMode:'live'});
+  assert(!JSON.stringify(checked).includes('CANARY'));
+  assert(!JSON.stringify((await pool.query('select result from pilot_service_actions where id=$1',[option.id])).rows).includes('CANARY'));
+  await connections.decideAction(B,option.id,option.digest,true,'free_shipping_option');assert.equal(carrierCalls,1);
+  assert.equal((await prepareShippingOption(service(),B,randomUUID(),optionInput)).id,option.id);
+  const expiredSource=structuredClone(stored);expiredSource.structuredContent.shippingRates.shipment.rates[0].expiresAt='2000-01-01T00:00:00Z';
+  await pool.query('update pilot_service_actions set result=$2 where id=$1',[poll.id,expiredSource]);
+  await assert.rejects(prepareShippingOption(service(),B,randomUUID(),optionInput),/missing or expired/);
+  await pool.query('update pilot_service_actions set result=$2 where id=$1',[poll.id,stored]);
+  // Another described check cannot bypass provider active-state verification.
+  const secondCarrierDescription=await describe('GetCarrierAccount','read',{CarrierAccountId:'string'});
+  const inactive=await prepareShippingOption(service(),B,randomUUID(),{...optionInput,descriptionActionId:secondCarrierDescription});expectedAction=inactive.id;carrierActive=false;
+  const inactiveResult=await connections.decideAction(B,inactive.id,inactive.digest,true,'free_shipping_option');
+  assert.equal(inactiveResult.state,'returned_error');assert.equal(inactiveResult.result,null);carrierActive=true;
   const plan=async()=>{const next=(await propose()).shippingData!;await decide(A);await decide(B);await validate(next.id,'buyer');await validate(next.id,'seller');return next;};
   // A timeout after send cannot allocate another CreateShipment operation.
   const second=await plan(),uncertain=await prepareShippingRates(service(),B,randomUUID(),await input(second.id));
@@ -210,5 +240,5 @@ try {
   assert.equal(rejected.state,'returned_error');assert.equal(rejected.result,null);
   assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[draft.id])).rows[0].n,0);
   const final=await service().get(B,draft.id);assert.equal(final.payment,'unpaid');assert.equal(final.shipping,'none');assert.equal(final.offer,null);
-  process.stdout.write('PASS: approved private SDK rate creation/retrieval, two validated addresses, exact prices, live-mode evidence, privacy, duplicate/uncertain dispatch, consent withdrawal race, account binding; no external calls or purchases.\n');
+  process.stdout.write('PASS: approved private SDK rate creation/retrieval, two validated addresses, exact prices, active selected-carrier SDK verification, expiry, live-mode evidence, privacy, duplicate/uncertain dispatch, consent withdrawal race, account binding; no external calls or purchases.\n');
 } finally {await pool.end();}
