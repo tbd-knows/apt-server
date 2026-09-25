@@ -7,6 +7,7 @@ import { conflict, requireRole } from './domain.js';
 import type { CommerceService } from './service.js';
 import type { EasyPostProvider } from './providers.js';
 import { downloadShippingArtifact } from './shipping-artifact.js';
+import type { ConnectedShippingRead } from './connected-shipping-read.js';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 export async function sanitizePhoto(bytes: Buffer) {
@@ -22,7 +23,7 @@ export async function sanitizePhoto(bytes: Buffer) {
 export class CommerceAssets {
   private readonly storage;
   constructor(private readonly commerce: CommerceService, supabaseUrl: string, secret: string, private readonly bucket: string,
-    private readonly shipping: EasyPostProvider) {
+    private readonly shipping: EasyPostProvider, private readonly connectedShipping?: ConnectedShippingRead) {
     this.storage = createClient(supabaseUrl, secret, { auth: { persistSession: false, autoRefreshToken: false } }).storage;
   }
   async upload(actor: string, exchangeId: string, raw: unknown) {
@@ -67,6 +68,17 @@ export class CommerceAssets {
       : exchange.payment !== 'paid' || exchange.cancellationRequested || !exchange.offers.length)) conflict('No usable paid label is available.');
     const quote = returning ? exchange.returnPlan?.quote : exchange.offers.at(-1)?.quote;
     if (!quote) conflict('No return quote is available.');
+    const offer = exchange.offers.at(-1)!;
+    if (offer.connectedShipping) {
+      if (returning || !this.connectedShipping) conflict('The connected shipping artifact is unavailable.');
+      const operation = (await this.commerce.repository.pool.query<{id:string;provider_id:string}>(
+        `select id,provider_id from pilot_operations where exchange_id=$1 and mode=$2 and kind='label'
+         and version=$3 and provider_id is not null`, [exchange.id,exchange.mode,offer.version])).rows[0];
+      if (!operation) conflict('The purchased shipping transaction has not been recorded.');
+      const transaction = await this.connectedShipping.transaction(exchange,offer,operation.id,operation.provider_id);
+      if (transaction.state !== 'purchased') conflict('The service has not returned usable purchased postage.');
+      return downloadShippingArtifact(transaction.privateArtifactUrl,transaction.artifact);
+    }
     const shipment = await this.shipping.retrieve(quote.shipmentId);
     this.shipping.validateApproved(shipment, quote);
     const url = shipment.postage_label?.label_pdf_url;

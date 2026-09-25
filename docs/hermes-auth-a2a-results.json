@@ -1,7 +1,7 @@
 {
   "hermesVersion": "v2026.8.19",
   "transport": "native Hermes A2A adapter and protocol helpers",
-  "authentication": "internal fixture identities",
+  "authentication": "two real Supabase test accounts; authenticated HTTP commands",
   "processes": "two isolated gateways",
   "database": "disposable PostgreSQL",
   "model": "deterministic fixture; not live-model acceptance",
@@ -17,5 +17,5 @@
   "humanDecisionRequired": "pass",
   "buyerPrivateCanariesAbsentFromSellerModel": "pass",
   "publicResearch": "not run",
-  "testedAt": "2026-09-25T13:50:28.822Z"
+  "testedAt": "2026-09-25T13:41:20.172Z"
 }

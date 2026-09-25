@@ -1,3 +1,6 @@
+import { ConnectedShippingRead } from '../src/commerce/connected-shipping-read.js';
+import { digest } from '../src/commerce/domain.js';
+import { requireConnectedOffer } from '../src/commerce/connected-offer.js';
 /** Real disposable Postgres; no model, third-party disclosure or purchase. */
 import assert from 'node:assert/strict';
 import { prepareConnectedOffer } from '../src/commerce/connected-offer.js';
@@ -353,5 +356,87 @@ try {
   await assert.rejects(liveService.command(A,draft.id,randomUUID(),liveView.revision,{type:'checkout'}),/postage execution must be available/);
   assert.equal((await liveService.get(A,draft.id)).payment,'unpaid');
   assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[draft.id])).rows[0].n,0);
-  process.stdout.write('PASS: approved private SDK rate creation/retrieval, two validated addresses, exact prices, active selected-carrier SDK verification, official public drop-off binding/expiry/area-change race and replay, expiry, live-mode evidence, private connected offer preparation, explicit seller sharing, separate exact approvals, live-postage/test-payment denial, privacy, duplicate/uncertain dispatch, consent withdrawal race, account binding; no external calls or purchases.\n');
+  // Read-only connected reconciliation: actual MCP SDK, synthetic transport.
+  // No real postage or Stripe purchase occurs in this disposable live fixture.
+  const descriptions:Record<string,Record<string,string>>={GetRate:{RateId:'string'},GetTransaction:{TransactionId:'string'},
+    GetTrack:{Carrier:'string',TrackingNumber:'string'},GetRefund:{RefundId:'string'}};
+  for(const [name,fields] of Object.entries(descriptions)) await describe(name,'read',fields);
+  await pool.query("update pilot_service_actions set mode='live' where connection_id=$1",[connection]);
+  await pool.query('update pilot_connections set credentials=$2 where id=$1',[connection,
+    new ConnectionSecrets(root).seal(JSON.stringify([connection,B,draft.id,'live',endpoint]),{tokens:{access_token:'TOKEN_CANARY',token_type:'Bearer'}})]);
+  let readCalls=0,price='8.05',account='PRIVATE_ACCOUNT_CANARY',trackStatus='TRANSIT';
+  let beforeRead:(()=>Promise<void>)|undefined,afterRead:(()=>Promise<void>)|undefined;
+  const labelOp=randomUUID(),refundOp=randomUUID();
+  const readFetch:FetchLike=async(_url,init)=>{
+    if(init?.method==='DELETE') return new Response(null,{status:200});
+    if(init?.method==='GET') return new Response(null,{status:405});
+    const message=JSON.parse(String(init?.body));
+    if(message.id===undefined) return new Response(null,{status:202});
+    let result:unknown;
+    if(message.method==='initialize') result={protocolVersion:'2025-11-25',capabilities:{tools:{}},serverInfo:{name:'read-fixture',version:'1'}};
+    else if(message.method==='tools/list') {await beforeRead?.();result={tools:[read,write]};}
+    else {
+      readCalls++;assert.equal(message.params.name,read.name);
+      const {name,arguments:args}=message.params.arguments;
+      assert(!JSON.stringify(args).includes('CANARY'));
+      let payload:unknown;
+      if(name==='GetRate') {assert.deepEqual(args,{RateId:'rate_fixture'});payload={object_id:'rate_fixture',object_owner:account,
+        object_created:new Date().toISOString(),test:false,shipment:'shipment_fixture',carrier_account:'carrier_fixture',provider:'FedEx',
+        servicelevel:{token:'fedex_ground',name:'Ground'},amount:price,currency:'USD',estimated_days:3};}
+      else if(name==='GetCarrierAccount') {assert.deepEqual(args,{CarrierAccountId:'carrier_fixture'});payload={object_id:'carrier_fixture',object_owner:account,test:false,active:true,carrier:'fedex'};}
+      else if(name==='GetTransaction') {assert.deepEqual(args,{TransactionId:'transaction_fixture'});payload={object_id:'transaction_fixture',object_owner:account,test:false,
+        metadata:shippoOperationMetadata(labelOp),rate:'rate_fixture',parcel:'parcel_fixture',status:'SUCCESS',tracking_number:'TRACKING_FIXTURE',
+        label_file_type:'PDF',label_url:'https://deliver.goshippo.com/label.pdf?signature=PRIVATE_ARTIFACT_CANARY'};}
+      else if(name==='GetTrack') {assert.deepEqual(args,{Carrier:'fedex',TrackingNumber:'TRACKING_FIXTURE'});payload={carrier:'fedex',tracking_number:'TRACKING_FIXTURE',
+        transaction:'transaction_fixture',tracking_status:{object_id:'event_fixture',object_updated:new Date().toISOString(),status_date:new Date().toISOString(),status:trackStatus}};}
+      else {assert.equal(name,'GetRefund');assert.deepEqual(args,{RefundId:'refund_fixture'});payload={object_id:'refund_fixture',object_owner:account,test:false,transaction:'transaction_fixture',status:'PENDING'};}
+      await afterRead?.();
+      result={content:[{type:'text',text:JSON.stringify({ContentType:'application/json',StatusCode:200,RawResponse:{},Response:payload})}]};
+    }
+    return new Response(JSON.stringify({jsonrpc:'2.0',id:message.id,result}),{headers:{'content-type':'application/json'}});
+  };
+  const reader=new ConnectedShippingRead(liveService,root,(url,invocation,before,_fetch,redact)=>executeMcp(url,invocation,before,readFetch,redact));
+  const offer=liveExchange.offers.at(-1)!;
+  assert.equal((await reader.preflight(liveExchange,offer)).amount,805);
+  price='8.06';await assert.rejects(reader.preflight(liveExchange,offer),/rate changed/);price='8.05';
+  account='OTHER';await assert.rejects(reader.preflight(liveExchange,offer),/Shipping evidence/);account='PRIVATE_ACCOUNT_CANARY';
+  const beforeRace=readCalls;
+  beforeRead=async()=>{await pool.query("update pilot_connections set state='revoked' where id=$1",[connection]);};
+  await assert.rejects(reader.preflight(liveExchange,offer),/did not return verified/);assert.equal(readCalls,beforeRace);
+  beforeRead=undefined;await pool.query("update pilot_connections set state='connected' where id=$1",[connection]);
+  afterRead=async()=>{await pool.query("update pilot_connections set state='revoked' where id=$1",[connection]);};
+  await assert.rejects(reader.preflight(liveExchange,offer),/account, item or private/);
+  afterRead=undefined;await pool.query("update pilot_connections set state='connected' where id=$1",[connection]);
+  await assert.rejects(reader.transaction(liveExchange,offer,labelOp,'transaction_fixture'),/has not been recorded/);
+  await pool.query(`insert into pilot_operations(id,exchange_id,mode,kind,version,provider_id,state)
+    values($1,$2,'live','label',$3,'transaction_fixture','succeeded')`,[labelOp,draft.id,offer.version]);
+  assert.equal((await reader.transaction(liveExchange,offer,labelOp,'transaction_fixture')).state,'purchased');
+  assert.equal((await reader.tracking(liveExchange,offer,labelOp,'transaction_fixture')).state,'in_transit');
+  trackStatus='DELIVERED';assert.equal((await reader.tracking(liveExchange,offer,labelOp,'transaction_fixture')).state,'delivered');
+  account='OTHER';await assert.rejects(reader.transaction(liveExchange,offer,labelOp,'transaction_fixture'),/Shipping evidence/);account='PRIVATE_ACCOUNT_CANARY';
+  await assert.rejects(reader.refund(liveExchange,offer,'transaction_fixture','refund_fixture'),/has not been recorded/);
+  await pool.query(`insert into pilot_operations(id,exchange_id,mode,kind,version,provider_id,state,result)
+    values($1,$2,'live','label_refund',$3,'refund_fixture','succeeded',$4)`,[refundOp,draft.id,offer.version,{transactionId:'transaction_fixture'}]);
+  assert.equal((await reader.refund(liveExchange,offer,'transaction_fixture','refund_fixture')).state,'pending');
+  // A fresh connection generation permits reads only after fresh descriptions,
+  // but never extends the original permission to spend.
+  const nextGeneration=randomUUID();await pool.query('update pilot_connections set generation=$2 where id=$1',[connection,nextGeneration]);
+  await assert.rejects(reader.transaction(liveExchange,offer,labelOp,'transaction_fixture'),/Describe GetTransaction/);
+  await pool.query('update pilot_service_actions set generation=$2 where connection_id=$1',[connection,nextGeneration]);
+  assert.equal((await reader.transaction(liveExchange,offer,labelOp,'transaction_fixture')).state,'purchased');
+  await assert.rejects(reader.preflight(liveExchange,offer),/account, item or private/);
+  await pool.query('update pilot_connections set generation=$2 where id=$1',[connection,generation]);
+  await pool.query('update pilot_service_actions set generation=$2 where connection_id=$1',[connection,generation]);
+  // Expire this synthetic offer and update its matching private digest: expiry
+  // prohibits spend preflight while canonical known-transaction reads remain.
+  offer.expiresAt='2026-01-01T00:00:00Z';
+  const savedPrivate=await repository.privateInput(liveExchange,B);savedPrivate.connectedShipping![String(offer.version)]!.offerDigest=digest(offer);
+  await repository.transaction(async sql=>{await repository.savePrivate(sql,liveExchange,B,savedPrivate);await sql.query('update pilot_exchanges set data=$2 where id=$1',[draft.id,liveExchange]);});
+  assert.equal((await reader.transaction(liveExchange,offer,labelOp,'transaction_fixture')).state,'purchased');
+  await assert.rejects(repository.transaction(sql=>requireConnectedOffer(liveService,sql,liveExchange,offer)),/expired/);
+  for(const actor of [A,B]) {
+    const projection=JSON.stringify(await liveService.get(actor,draft.id));
+    for(const secret of ['TOKEN_CANARY','PRIVATE_ACCOUNT_CANARY','PRIVATE_ARTIFACT_CANARY']) assert(!projection.includes(secret));
+  }
+  process.stdout.write('PASS: approved private SDK rate creation/retrieval, two validated addresses, exact prices, active selected-carrier SDK verification, official public drop-off binding/expiry/area-change race and replay, expiry, live-mode evidence, private connected offer preparation, explicit seller sharing, separate exact approvals, live-postage/test-payment denial, privacy, duplicate/uncertain dispatch, consent withdrawal race, account binding, canonical SDK rate/transaction/tracking/refund reads, reauthorization and expiry separation, revocation races; no external calls or purchases.\n');
 } finally {await pool.end();}

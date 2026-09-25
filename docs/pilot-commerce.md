@@ -323,3 +323,55 @@ permission. Service account credentials and identity are not shared with the buy
 or model. Stale draft/connection/form evidence is rejected. Test-mode payments cannot
 fund live postage. Payment is explicitly unavailable for connected offers until the
 paid connected shipping driver is complete; no fallback platform postage is used.
+
+
+### Real test accounts and connected shipping reads (September 25)
+
+The optional authenticated Hermes check uses two dedicated Supabase Auth test
+accounts through the production `SupabaseAuthService` and actual loopback HTTP
+routes. Set `APT_TEST_ACCOUNTS_FILE` to an owner-readable-only JSON file containing
+`project`, `runId`, `publishableKey`, and exactly two `accounts` (buyer then seller),
+each with `role`, `id`, `email`, and `password`. Emails must follow
+`tbd12-<runId>-<role>@example.invalid`; server-controlled Auth `app_metadata` must
+match `tbd_test_run` and `tbd_test_role`. This prevents the harness from silently
+using a founder's identity. Do not commit this manifest or pass passwords in CLI
+arguments. The test uses password sign-in, verifies each identity, and signs out
+its sessions. It requires no local service-role key and sends no email.
+
+Run `test:local-db` against the disposable loopback PostgreSQL immediately before
+`test:hermes-a2a`, with the manifest variable and the pinned `HERMES_CLI` set. The
+local FK mirrors and agent profiles are disposable; production pilot UUIDs,
+founder grants, commerce rows, and migrations are unchanged. The report
+`docs/hermes-auth-a2a-results.json` records the actual authenticated run. It checks
+private draft denial, duplicate request identity, authenticated sharing, native
+Hermes delivery, seller-only prepared-action approval, private canaries, hostile
+peer denial, and restart recovery. Its model is deterministic. This is not a
+live-model, phone, payment, or physical shipping acceptance run.
+
+`ConnectedShippingRead` executes only `GetRate`, `GetCarrierAccount`,
+`GetTransaction`, `GetTrack`, and `GetRefund` through the authenticated MCP SDK.
+Each operation requires an observed description and the current catalog schema;
+connection ownership, offer identity and revocation are checked before dispatch
+and after the response. Arguments derive from the offer or recorded operations.
+Canonical rate checks reject changed prices/services/accounts. Transaction,
+tracking and refund receipts must match their persisted identities; raw account
+identities, addresses, carrier prose and signed label URLs are not projected into
+agent state. The seller label endpoint now retrieves a recorded connected
+transaction's verified artifact through the existing private binary downloader.
+It never falls back to platform-funded shipping for a connected offer.
+
+Reconciliation reads may continue after the offer's spending deadline, or after
+the same connection is reauthorized and its operations redescribed. The provider
+receipt must still establish the original account and purchased object. This does
+not renew spending approval: preflight still requires the original generation,
+expiry and private form versions. Unknown/pre-transit tracking is not carrier
+acceptance; a pending/rejected postage refund is not a completed Stripe refund.
+
+The PostgreSQL shipping suite exercises these reads through the actual MCP SDK
+with synthetic transport responses, including price/account mismatch,
+revocation before and during a read, fresh-generation description requirements,
+expiry, transaction/refund identity and private-output checks. No real postage
+was purchased. Connected purchase dispatch, worker lifecycle integration and
+returns remain incomplete, and the payment gate remains closed. Two test
+accounts do not remove the remaining live-model, Stripe, service authorization,
+device, physical delivery, review and merge requirements.

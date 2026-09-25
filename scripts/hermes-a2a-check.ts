@@ -1,6 +1,7 @@
 /** Real isolated Hermes gateways + real Postgres; deterministic model only.
  * Run after test:local-db. No provider commerce credentials or paid effects. */
 import assert from 'node:assert/strict';
+import { testAccountAuth } from './test-account-auth.js';
 import { randomUUID } from 'node:crypto';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -29,7 +30,8 @@ assert(URL.canParse(databaseUrl) && ['127.0.0.1','localhost','[::1]'].includes(n
 const cli = process.env.HERMES_CLI ?? 'hermes';
 const execute = promisify(execFile);
 const home = await mkdtemp(join(tmpdir(), 'tbd-hermes-a2a-'));
-const actors = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+const liveAuth = process.env.APT_TEST_ACCOUNTS_FILE ? await testAccountAuth(process.env.APT_TEST_ACCOUNTS_FILE) : null;
+const actors = liveAuth?.actors ?? ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
 const profiles = ['apt-aaaaaaaaaaaaaaaaaaaa', 'apt-bbbbbbbbbbbbbbbbbbbb'];
 const secret = 'deterministic-fixture-key-not-a-production-secret';
 const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
@@ -42,6 +44,7 @@ const children: ChildProcess[] = [];
 const diagnostics: string[] = [];
 let fixtureExchangeId: string | null = null;
 let proposed = false;
+let authClosed = false;
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function port() {
   const server = createServer(); await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -88,12 +91,12 @@ await new Promise<void>(resolve => model.listen(0, '127.0.0.1', resolve));
 const modelAddress = model.address(); assert(modelAddress && typeof modelAddress !== 'string');
 const apiPorts = [await port(), await port()]; const a2aPorts = [await port(), await port()]; const bridgePort = await port();
 const config = loadConfig({ NODE_ENV: 'test', LOG_LEVEL: 'silent', APT_PILOT_USER_IDS: actors.join(','),
-  SUPABASE_URL: 'https://example.supabase.co', SUPABASE_PUBLISHABLE_KEY: 'publishable-fixture-only', SUPABASE_SERVICE_ROLE_KEY: 'secret-fixture-only-value',
+  SUPABASE_URL: liveAuth?.url ?? 'https://example.supabase.co', SUPABASE_PUBLISHABLE_KEY: liveAuth?.publishableKey ?? 'publishable-fixture-only', SUPABASE_SERVICE_ROLE_KEY: 'secret-fixture-only-value',
   SUPABASE_DATABASE_URL: databaseUrl, HERMES_KEY_SECRET: secret, HERMES_MODEL: 'fixture-model', HERMES_PROVIDER_API_KEY: 'fixture-key',
   HERMES_PROFILE_URL_MAP: JSON.stringify(Object.fromEntries(profiles.map((p,i) => [p, `http://127.0.0.1:${apiPorts[i]}`]))),
   HERMES_A2A_PROFILE_URL_MAP: JSON.stringify(Object.fromEntries(profiles.map((p,i) => [p, `http://127.0.0.1:${a2aPorts[i]}`]))),
 });
-const app = await buildApp({ config, repository: chat, auth: { authenticate: async () => { throw new Error('Fixture has no public auth'); } },
+const app = await buildApp({ config, repository: chat, auth: liveAuth?.auth ?? { authenticate: async () => { throw new Error('Fixture has no public auth'); } },
   runtime: new MemoryAgentRuntime(new HermesAgentRuntime(config.hermes), memory, new MemoryMaterializer(home)), memoryService: memory, commerceService: commerce });
 const transport = new CommerceA2A(commerce, config.hermes);
 async function start(index: number) {
@@ -113,9 +116,24 @@ async function send(index: number, text: string, contextId: string, token?: stri
     body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'SendMessage', params: {
       message: { messageId: randomUUID(), role: 'ROLE_USER', contextId, parts: [{ text }] } } }), signal: AbortSignal.timeout(15000) });
 }
+async function publicRequest(index:number,path:string,payload?:unknown,status=200) {
+  const response=await fetch(`http://127.0.0.1:${bridgePort}${path}`,{method:payload?'POST':'GET',
+    headers:{'Content-Type':'application/json',...(index>=0?{Authorization:`Bearer ${liveAuth!.tokens[index]}`}:{})},
+    ...(payload?{body:JSON.stringify(payload)}:{}),signal:AbortSignal.timeout(20000)});
+  assert.equal(response.status,status,`Authenticated ${path} status`);
+  return await response.json() as Awaited<ReturnType<CommerceService['get']>>;
+}
 try {
   const existing=(await pool.query('select count(*)::int n from pilot_exchanges')).rows[0].n;
   assert.equal(existing,0,'Run test:local-db immediately before test:hermes-a2a. Earlier commerce fixtures can delay its bounded A2A delivery check.');
+  if (liveAuth) {
+    // Local FK mirrors only. No live database schema or founder grants change.
+    for (let i=0;i<2;i++) {
+      await pool.query('insert into auth.users(id,email) values($1,$2) on conflict(id) do nothing', [actors[i], `test-${i}@example.invalid`]);
+      await pool.query('delete from agent_instances where hermes_profile_name=$1', [profiles[i]]);
+      await pool.query('insert into agent_instances(user_id,hermes_profile_name,hermes_session_id) values($1,$2,$3)', [actors[i],profiles[i],randomUUID()]);
+    }
+  }
   for (let i=0;i<2;i++) {
     await execute(cli, ['profile','create',profiles[i]!, '--no-alias','--no-skills'], { env: { ...process.env, HERMES_HOME: home }, timeout: 60000 });
     const directory = join(home,'profiles',profiles[i]!);
@@ -139,9 +157,19 @@ try {
     payload: { tool: 'apt_commerce', arguments: { action: 'state' } } });
   assert.equal(response.statusCode, 401);
   assert.equal((await app.inject({ method: 'GET', url: '/internal/a2a/outbox', headers: { authorization: `Bearer ${aptBridgeToken(profiles[0]!,secret)}` } })).statusCode, 401);
-  const draft = await commerce.create(actors[0]!, randomUUID(), { request: { item: 'White Nike Air Force 1', style: 'Low', size: '10', sizingSystem: 'US men', condition: 'Used good' }, privateBudget: 937123 });
+  const requestInput = { request: { item: 'White Nike Air Force 1', style: 'Low', size: '10', sizingSystem: 'US men', condition: 'Used good' }, privateBudget: 937123 };
+  const key = randomUUID();
+  const draft = liveAuth ? await publicRequest(0, '/v1/commerce/requests', {key,input:requestInput}) : await commerce.create(actors[0]!,key,requestInput);
+  if (liveAuth) {
+    const duplicate = await publicRequest(0, '/v1/commerce/requests', {key,input:requestInput});
+    assert.equal(duplicate.id,draft.id);
+    await publicRequest(1, `/v1/commerce/exchanges/${draft.id}`, undefined,404);
+    await publicRequest(-1, '/v1/commerce', undefined,401);
+  }
   fixtureExchangeId = draft.id;
-  await commerce.command(actors[0]!, draft.id, randomUUID(), draft.revision, { type: 'share_request', requestDigest: draft.requestDigest });
+  const share={type:'share_request',requestDigest:draft.requestDigest};
+  if(liveAuth) await publicRequest(0, `/v1/commerce/exchanges/${draft.id}/actions`, {key:randomUUID(),revision:draft.revision,command:share});
+  else await commerce.command(actors[0]!,draft.id,randomUUID(),draft.revision,share);
   const message = (await pool.query('select id from pilot_messages where exchange_id=$1 and sender_id<>recipient_id', [draft.id])).rows[0];
   await eventually(async () => !!(await pool.query('select a2a_received_at from pilot_messages where id=$1', [message.id])).rows[0]?.a2a_received_at, 'A2A receipt');
   await eventually(async () => calls.some(c=>c.key==='Bearer fixture-provider-1'), 'Receiving private agent wake-up');
@@ -159,8 +187,13 @@ try {
   const current = await commerce.get(actors[1]!, draft.id);
   assert.equal(current.stage, 'waiting_for_seller', 'Model committed a decline without owner approval');
   assert(current.privateInput.agentAction);
-  await commerce.command(actors[1]!, draft.id, randomUUID(), current.revision, { type: 'approve_agent_action',
-    actionId: current.privateInput.agentAction.id, actionDigest: current.privateInput.agentAction.digest });
+  const decision={type:'approve_agent_action',actionId:current.privateInput.agentAction.id,actionDigest:current.privateInput.agentAction.digest};
+  if(liveAuth) {
+    const buyerView=await publicRequest(0, `/v1/commerce/exchanges/${draft.id}`);
+    assert(!buyerView.privateInput.agentAction,'Seller private proposal leaked to buyer');
+    await publicRequest(0, `/v1/commerce/exchanges/${draft.id}/actions`,{key:randomUUID(),revision:current.revision,command:decision},409);
+    await publicRequest(1, `/v1/commerce/exchanges/${draft.id}/actions`,{key:randomUUID(),revision:current.revision,command:decision});
+  } else await commerce.command(actors[1]!, draft.id, randomUUID(),current.revision,decision);
   const decline = (await pool.query("select id from pilot_messages where exchange_id=$1 and kind='decline'", [draft.id])).rows[0];
   await start(0);
   await eventually(async () => !!(await pool.query('select a2a_received_at from pilot_messages where id=$1', [decline.id])).rows[0]?.a2a_received_at, 'Restarted recipient receipt');
@@ -180,14 +213,17 @@ try {
     publicResearch = 'pass: actual keyless search via isolated Hermes, public sample postcode; no fulfillment verification';
   }
   const report = { hermesVersion: 'v2026.8.19', transport: 'native Hermes A2A adapter and protocol helpers',
+    authentication: liveAuth ? 'two real Supabase test accounts; authenticated HTTP commands' : 'internal fixture identities',
     processes: 'two isolated gateways', database: 'disposable PostgreSQL', model: 'deterministic fixture; not live-model acceptance',
     agentCards: 'pass', approvedInquiryAndDecline: 'pass', receiverPrivateWake: 'pass', wrongKeyAndForeignMessage: 'pass',
     hostilePeerDoesNotInvokeModel: 'pass', receiptNoPrivateOutput: 'pass', duplicateNoSecondOwnerTurn: 'pass', restartPendingDelivery: 'pass',
     privateModelMcpPreparation: 'pass', humanDecisionRequired: 'pass', buyerPrivateCanariesAbsentFromSellerModel: 'pass', publicResearch, testedAt: new Date().toISOString() };
-  await writeFile('docs/hermes-a2a-results.json', JSON.stringify(report,null,2)+'\n');
+  await liveAuth?.close(); authClosed = true;
+  await writeFile(liveAuth ? 'docs/hermes-auth-a2a-results.json' : 'docs/hermes-a2a-results.json', JSON.stringify(report,null,2)+'\n');
   process.stdout.write('PASS: actual Hermes A2A between two isolated gateways, Postgres receipts, recipient wake, duplicate/restart recovery, hostile/foreign denial. Model is deterministic.\n');
 } finally {
   await Promise.all(children.map(stop)); await app.close(); await pool.end(); await memoryRepository.close();
   await new Promise<void>(resolve => model.close(() => resolve()));
   await rm(home, { recursive: true, force: true });
+  if (!authClosed) await liveAuth?.close();
 }

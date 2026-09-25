@@ -37,18 +37,18 @@ export function connectedOfferDraftView(draft:ConnectedOfferDraft|undefined,revi
 }
 /** Exact sale approvals grant separate fulfillment authority; the earlier free
  * lookup consent is not extended or reused to authorize a postage purchase. */
-export async function requireConnectedOffer(commerce:CommerceService,sql:PoolClient,e:Exchange,offer:Offer) {
+export async function requireConnectedOffer(commerce:CommerceService,sql:PoolClient,e:Exchange,offer:Offer,purpose:'spend'|'reconcile'='spend') {
   const shipping=(await commerce.repository.privateInput(e,e.sellerId,sql)).connectedShipping?.[String(offer.version)];
   if(!shipping || !offer.connectedShipping || offer.postageFunding!=='seller_reimbursed'
     || offer.connectedShipping.authorizationId!==shipping.authorizationId || shipping.offerDigest!==digest(offer)
     || offer.connectedShipping.endpoint!==shipping.endpoint || offer.connectedShipping.providerMode!=='live'
-    || e.mode!==commerce.mode || Date.parse(offer.expiresAt)<=Date.now()) conflict('The connected shipping authorization is missing, changed or expired.');
+    || e.mode!==commerce.mode || (purpose==='spend' && Date.parse(offer.expiresAt)<=Date.now())) conflict('The connected shipping authorization is missing, changed or expired.');
   const connection=(await sql.query<{id:string}>(`select id from pilot_connections where id=$1 and owner_id=$2 and exchange_id=$3
-    and mode=$4 and generation=$5 and endpoint=$6 and state='connected' and access_expires_at>now() for update`,
-    [shipping.connectionId,e.sellerId,e.id,e.mode,shipping.generation,shipping.endpoint])).rows[0];
+    and mode=$4 and ($7::boolean or generation=$5) and endpoint=$6 and state='connected' and access_expires_at>now() for update`,
+    [shipping.connectionId,e.sellerId,e.id,e.mode,shipping.generation,shipping.endpoint,purpose==='reconcile'])).rows[0];
   const buyer=await commerce.repository.privateInput(e,e.buyerId,sql),seller=await commerce.repository.privateInput(e,e.sellerId,sql);
-  if(!connection || buyer.addressVersion!==offer.quote.destinationVersion || seller.addressVersion!==offer.quote.originVersion
-    || seller.packingVersion!==offer.quote.packingVersion || digest(e.item)!==digest(offer.item)) {
+  if(!connection || (purpose==='spend' && (buyer.addressVersion!==offer.quote.destinationVersion || seller.addressVersion!==offer.quote.originVersion
+    || seller.packingVersion!==offer.quote.packingVersion || digest(e.item)!==digest(offer.item)))) {
     conflict('The connected shipping account, item or private shipping details changed. Prepare a new offer.');
   }
   return shipping;

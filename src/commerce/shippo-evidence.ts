@@ -226,3 +226,38 @@ export function shippoTransaction(receipt: ServiceResult, binding: ShippoTransac
   }
   return { state: 'purchased', transactionId: transaction.object_id, trackingNumber: transaction.tracking_number!, privateArtifactUrl: url, artifact: binding.artifact };
 }
+
+/** Later tracking reads are bound to the purchased transaction, not a new
+ * spending approval. The owner-only transaction field must be present; a
+ * public tracking number alone cannot establish this account's shipment. */
+export function shippoTracking(receipt: ServiceResult, binding: {
+  transactionId: string; trackingNumber: string; carrierToken: string;
+}, now = new Date()) {
+  const event = z.object({ object_id: identifier, object_updated: timestamp,
+    status_date: timestamp, status: z.enum(['UNKNOWN','PRE_TRANSIT','TRANSIT','DELIVERED','RETURNED','FAILURE']) });
+  const track = parse(z.object({ carrier: identifier, tracking_number: z.string().min(1).max(120),
+    transaction: identifier, tracking_status: event.nullish() }), shippoPayload(receipt));
+  requireEvidence(track.carrier === binding.carrierToken && track.tracking_number === binding.trackingNumber
+    && track.transaction === binding.transactionId);
+  if (!track.tracking_status) return { state: 'unknown' as const };
+  const status = track.tracking_status;
+  requireEvidence(Date.parse(status.object_updated) <= now.getTime() + 60_000
+    && Date.parse(status.status_date) <= now.getTime() + 60_000);
+  const states = { UNKNOWN:'unknown', PRE_TRANSIT:'label_ready', TRANSIT:'in_transit',
+    DELIVERED:'delivered', RETURNED:'exception', FAILURE:'exception' } as const;
+  return { state: states[status.status], eventId: status.object_id,
+    updatedAt: status.object_updated, occurredAt: status.status_date };
+}
+
+/** A postage refund is separate from the Stripe buyer refund. Pending and
+ * rejected carrier refunds never become a successful reimbursement locally. */
+export function shippoRefund(receipt: ServiceResult, binding: {
+  transactionId: string; accountOwner: string; mode: Mode;
+}, expectedRefundId?: string) {
+  const refund = parse(z.object({ object_id: identifier, object_owner: owner,
+    test: z.boolean(), transaction: identifier, status: z.enum(['QUEUED','PENDING','SUCCESS','ERROR']) }), shippoPayload(receipt));
+  requireEvidence(refund.object_owner === binding.accountOwner && refund.test === (binding.mode === 'test')
+    && refund.transaction === binding.transactionId && (!expectedRefundId || refund.object_id === expectedRefundId));
+  return { refundId: refund.object_id, state: refund.status === 'SUCCESS' ? 'refunded' as const
+    : refund.status === 'ERROR' ? 'rejected' as const : 'pending' as const };
+}
