@@ -9,6 +9,7 @@ import type { ServiceInvocation,ServiceResult } from './mcp-execution.js';
 import { requireCapabilityDiscovery } from './service-policy.js';
 import { shippingOptionResultView } from './shipping-option.js';
 import { shippingRatesResultView } from './shipping-rates.js';
+import { requireReturnPlanning } from './shipping-consent.js';
 
 export const serviceActionSchema=z.object({action:z.literal('prepare_service_action'),exchangeId:z.uuid(),connectionId:z.uuid(),
   revision:z.number().int().positive(),tool:z.string().min(1).max(128),arguments:z.record(z.string(),z.unknown()),
@@ -35,6 +36,15 @@ function validationResultView(result:ServiceActionRow['result']):ServiceActionRo
 export function activeServiceExchange(e:Exchange) {
   if(['cancelled','declined','expired','completed'].includes(e.stage) || e.cancellationRequested || e.problem) conflict('Resolve the exchange before using a service.');
   if(e.payment==='unpaid' && Date.parse(e.expiresAt)<=Date.now()) conflict('This exchange expired.');
+}
+export function activeServiceInvocation(e:Exchange,endpoint:string,invocation:ServiceInvocation) {
+  if(!invocation.shippingRates && !invocation.shippingOption && !invocation.shippingValidation) {
+    // Metadata discovery remains available for reconciliation after payment,
+    // cancellation or delivery. This does not permit read/write execution.
+    requireCapabilityDiscovery(endpoint,invocation);return;
+  }
+  if(e.shippingData?.journey==='return') requireReturnPlanning(e);
+  else activeServiceExchange(e);
 }
 export async function listServiceActions(commerce:CommerceService,actor:string,exchangeId:string) {
   commerce.authorize(actor);
@@ -69,7 +79,7 @@ export async function prepareServiceAction(commerce:CommerceService,actor:string
   commerce.authorize(actor);const input=serviceActionSchema.parse(raw);
   if(Buffer.byteLength(JSON.stringify(input.arguments))>24000) conflict('Service arguments are too large to review.');
   return commerce.repository.transaction(async sql=>{
-    const e=await commerce.repository.get(input.exchangeId,actor,sql,true);exchangeView(e,actor);activeServiceExchange(e);
+    const e=await commerce.repository.get(input.exchangeId,actor,sql,true);exchangeView(e,actor);
     if(e.mode!==commerce.mode) throw new AppError('NOT_FOUND','Exchange not found.');
     const previous=(await sql.query<ServiceActionRow>('select * from pilot_service_actions where owner_id=$1 and turn_id=$2',[actor,turnId])).rows[0];
     if(previous) {
@@ -85,8 +95,9 @@ export async function prepareServiceAction(commerce:CommerceService,actor:string
     await expireServiceReviews(commerce,sql,e,actor,input.connectionId,connection.generation);
     const invocation={tool,arguments:input.arguments},callDigest=digest({endpoint:connection.endpoint,invocation});
     requireCapabilityDiscovery(connection.endpoint,invocation);
+    activeServiceInvocation(e,connection.endpoint,invocation);
     const duplicate=(await sql.query<ServiceActionRow>(`select * from pilot_service_actions where connection_id=$1 and call_digest=$2
-      and state not in ('declined','failed','expired') order by created_at desc limit 1`,[input.connectionId,callDigest])).rows[0];
+      and generation=$3 and state not in ('declined','failed','expired') order by created_at desc limit 1`,[input.connectionId,callDigest,connection.generation])).rows[0];
     if(duplicate) return serviceActionView(duplicate);
     const count=(await sql.query('select count(*)::int n from pilot_service_actions where exchange_id=$1 and owner_id=$2',[e.id,actor])).rows[0].n;
     if(count>=100) conflict('Review existing service actions before preparing more.');

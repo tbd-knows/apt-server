@@ -9,6 +9,35 @@ import { requireShippingDataConsent } from './shipping-consent.js';
 import { ratedShippingSource } from './shipping-rates.js';
 import { requireShippoDescription,requireShippoWrapper } from './shipping-validation.js';
 import { shippoCarrier } from './shippo-evidence.js';
+import { AppError } from '../errors.js';
+
+/** Both agents may coordinate an agreed return using public rate facts. The
+ * seller's OAuth account, raw receipts and private forms stay owner-private. */
+export async function returnShippingOptions(commerce:CommerceService,actor:string,exchangeId:string) {
+  return commerce.repository.transaction(async sql=>{
+    const e=await commerce.repository.get(exchangeId,actor,sql,true);exchangeView(e,actor);
+    if(e.mode!==commerce.mode || e.shippingData?.journey!=='return') return [];
+    try {await requireShippingDataConsent(commerce,sql,e,e.shippingData.connectionId,e.shippingData.id,new Date());}
+    catch(error) {if(!(error instanceof AppError)) throw error;return [];}
+    const rows=(await sql.query<ServiceActionRow>(`select a.* from pilot_service_actions a join pilot_service_actions r
+      on r.id::text=a.invocation->'shippingOption'->>'rateActionId'
+      where a.exchange_id=$1 and a.owner_id=$2 and a.mode=$3 and a.generation=$4 and a.state='returned'
+      and r.invocation->'shippingRates'->>'consentId'=$5 order by a.created_at desc limit 12`,
+      [e.id,e.sellerId,e.mode,e.shippingData.generation,e.shippingData.id])).rows;
+    const options=[];
+    for(const row of rows) {
+      try {
+        await checkShippingOption(commerce,sql,row);
+        const option=checkedShippingOption(row);
+        const source=(await sql.query<ServiceActionRow>('select * from pilot_service_actions where id=$1',[option.sourceActionId])).rows[0]!;
+        const rate=ratedShippingSource(source).shipment.rates.find(rate=>rate.rateId===option.rateId)!;
+        options.push({carrierActionId:row.id,carrierToken:option.carrierToken,rate,
+          scope:'return_rate_and_carrier_only' as const});
+      } catch(error) {if(!(error instanceof AppError)) throw error;}
+    }
+    return options;
+  });
+}
 
 const identifier=z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
 export const shippingOptionSchema=z.object({action:z.literal('prepare_shipping_option'),exchangeId:z.uuid(),

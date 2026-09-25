@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { AppError } from '../errors.js';
-import { conflict, digest, exchangeView, mutable } from './domain.js';
+import { conflict, digest, exchangeView, mutable,type Exchange } from './domain.js';
+import { requireReturnPlanning } from './shipping-consent.js';
 import type { CommerceService } from './service.js';
 import { inspectMcp, type McpInspection } from './mcp-inspection.js';
 import { publicEndpoint } from './public-http.js';
@@ -23,6 +24,9 @@ const resultSchema = z.discriminatedUnion('success', [
   z.object({ success: z.literal(true), sources: z.array(sourceSchema).max(8), text: z.string().max(24000).optional() }).strict(),
   z.object({ success: z.literal(false) }).strict(),
 ]);
+export function requireResearchExchange(e:Exchange,now=new Date()) {
+  if(e.returnPlan) requireReturnPlanning(e); else mutable(e,now);
+}
 interface ResearchRow {
   id: string; exchange_id: string; owner_id: string; kind: 'nearby' | 'capabilities' | 'read_source' | 'inspect_mcp';
   input: { query?: string; url?: string; addressVersion: number }; input_hash: string;
@@ -42,13 +46,14 @@ export class CommerceResearch {
     const command = researchInputSchema.parse(raw);
     return this.commerce.repository.transaction(async sql => {
       const e = await this.commerce.repository.get(exchangeId,actor,sql,true);
-      exchangeView(e,actor); mutable(e,new Date());
+      exchangeView(e,actor); requireResearchExchange(e);
       if (e.mode !== this.commerce.mode) throw new AppError('NOT_FOUND','Exchange not found.');
       const mine = await this.commerce.repository.privateInput(e,actor,sql);
       let input: ResearchRow['input'];
       if (command.kind === 'nearby') {
         if (!mine.discoveryPostcode) conflict('Ask your owner to enter a postcode for service discovery. Full addresses are not used for search.');
-        input = { query: `parcel shipping drop off${mine.packing?.canPrint === false ? ' label printing' : ''} near ${mine.discoveryPostcode} US`, addressVersion: mine.discoveryVersion ?? 0 };
+        const packing=e.returnPlan && actor===e.buyerId ? mine.returnPacking : mine.packing;
+        input = { query: `parcel shipping drop off${packing?.canPrint === false ? ' label printing' : ''} near ${mine.discoveryPostcode} US`, addressVersion: mine.discoveryVersion ?? 0 };
       } else {
         const parent = await sql.query<ResearchRow>('select * from pilot_research where id=$1 and exchange_id=$2 and owner_id=$3 and mode=$4 and state=\'ready\'', [command.researchId,e.id,actor,e.mode]);
         const source = parent.rows[0]?.result?.sources.find(s=>s.id===command.sourceId);
@@ -145,8 +150,9 @@ export class CommerceResearch {
       if (!row) return null;
       const e = await this.commerce.repository.get(row.exchange_id,row.owner_id,sql);
       const mine = await this.commerce.repository.privateInput(e,row.owner_id,sql);
-      if (row.attempts>=3 || row.input.addressVersion!==(mine.discoveryVersion ?? 0)
-        || ['cancelled','declined','completed','expired'].includes(e.stage) || Date.parse(e.expiresAt)<=Date.now()) {
+      let active=true;
+      try {requireResearchExchange(e);} catch(error) {if(!(error instanceof AppError)) throw error;active=false;}
+      if (row.attempts>=3 || row.input.addressVersion!==(mine.discoveryVersion ?? 0) || !active) {
         await sql.query("update pilot_research set state='failed',updated_at=now() where id=$1",[row.id]);
         await this.commerce.repository.message(sql,e,row.owner_id,row.owner_id,'status',{action:'research_update',researchId:row.id});
         return null;

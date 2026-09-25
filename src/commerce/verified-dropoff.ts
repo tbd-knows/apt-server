@@ -8,6 +8,7 @@ import type { ServiceActionRow } from './service-actions.js';
 import { checkedShippingOption,checkShippingOption } from './shipping-option.js';
 import { ratedShippingSource } from './shipping-rates.js';
 import { supportedDropoffSource,verifyPublicDropoff } from './public-dropoff.js';
+import { requireReturnPlanning } from './shipping-consent.js';
 
 export const verifyDropoffSchema=z.object({action:z.literal('verify_dropoff'),exchangeId:z.uuid(),
   revision:z.number().int().positive(),carrierActionId:z.uuid(),researchId:z.uuid(),sourceId:z.uuid()}).strict();
@@ -20,10 +21,12 @@ export interface VerifiedDropoff {
  * neither URL, carrier facts nor private addresses can be supplied by a model. */
 async function context(commerce:CommerceService,sql:PoolClient,actor:string,input:Input) {
   const e=await commerce.repository.get(input.exchangeId,actor,sql,true);
-  exchangeView(e,actor);requireRole(e,actor,'seller');
+  const returning=e.shippingData?.journey==='return';
+  exchangeView(e,actor);requireRole(e,actor,returning?'buyer':'seller');
+  if(returning) requireReturnPlanning(e);
   if(e.mode!==commerce.mode || e.revision!==input.revision) conflict('The exchange changed. Read its current state.');
   const row=(await sql.query<ServiceActionRow>(`select * from pilot_service_actions
-    where id=$1 and exchange_id=$2 and owner_id=$3 and mode=$4`,[input.carrierActionId,e.id,actor,e.mode])).rows[0];
+    where id=$1 and exchange_id=$2 and owner_id=$3 and mode=$4`,[input.carrierActionId,e.id,e.sellerId,e.mode])).rows[0];
   if(!row) conflict('Complete the selected carrier account check first.');
   const option=checkedShippingOption(row),carrier=await checkShippingOption(commerce,sql,row);
   if(option.carrierAccountId!==carrier.carrierAccountId) conflict('The selected carrier account changed.');
@@ -41,14 +44,17 @@ async function context(commerce:CommerceService,sql:PoolClient,actor:string,inpu
   const source=research?.result?.sources.find(source=>source.id===input.sourceId);
   if(!mine.discoveryPostcode || research?.input.addressVersion!==(mine.discoveryVersion ?? 0)
     || !source || !supportedDropoffSource(source.url)) conflict('Choose an observed official location from research for your current discovery area.');
-  if(!mine.packing?.canPrint || option.carrierToken!=='fedex' || rate.serviceToken!=='fedex_ground') {
-    conflict('This verifier supports FedEx Ground with a printed label. Research another compatible path when needed.');
+  const packing=returning?mine.returnPacking:mine.packing;
+  if(!packing?.canPrint || !((option.carrierToken==='fedex' && rate.serviceToken==='fedex_ground')
+    || (option.carrierToken==='ups' && rate.serviceToken==='ups_ground'))) {
+    conflict('This verifier supports FedEx Ground and UPS Ground with a printed label. Research another compatible path when needed.');
   }
+  const value=option.carrierToken==='ups'?{itemValue:(returning?e.offers.at(-1)?.item:e.item)?.sellerAmount}:{};
   const expiresAt=new Date(Math.min(Date.parse(rate.expiresAt),Date.parse(e.shippingData!.expiresAt))).toISOString();
   const binding=digest({exchangeId:e.id,mode:e.mode,actor,carrierActionId:row.id,option,rate,
     connectionId:row.connection_id,generation:row.generation,endpoint:row.endpoint,consent:e.shippingData,
-    discoveryVersion:mine.discoveryVersion ?? 0,researchId:input.researchId,sourceId:input.sourceId,sourceUrl:source.url});
-  return {e,mine,binding,expiresAt,row,rate,rates,option,request:{sourceUrl:source.url,carrierToken:option.carrierToken,serviceToken:rate.serviceToken,packing:mine.packing}};
+    ...value,discoveryVersion:mine.discoveryVersion ?? 0,researchId:input.researchId,sourceId:input.sourceId,sourceUrl:source.url});
+  return {e,mine,binding,expiresAt,row,rate,rates,option,request:{sourceUrl:source.url,carrierToken:option.carrierToken,serviceToken:rate.serviceToken,packing,...value}};
 }
 export async function requireVerifiedDropoff(commerce:CommerceService,sql:PoolClient,actor:string,exchangeId:string,revision:number,id:string) {
   const e=await commerce.repository.get(exchangeId,actor,sql,true);
@@ -88,7 +94,7 @@ export async function verifyDropoff(commerce:CommerceService,actor:string,raw:un
 export async function verifiedDropoffView(commerce:CommerceService,actor:string,exchangeId:string) {
   return commerce.repository.transaction(async sql=>{
     const e=await commerce.repository.get(exchangeId,actor,sql,true);
-    if(actor!==e.sellerId || e.mode!==commerce.mode) return null;
+    if(actor!==(e.shippingData?.journey==='return'?e.buyerId:e.sellerId) || e.mode!==commerce.mode) return null;
     const record=(await commerce.repository.privateInput(e,actor,sql)).verifiedDropoff;
     if(!record) return null;
     let current=false;

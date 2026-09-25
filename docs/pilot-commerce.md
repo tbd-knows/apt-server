@@ -23,7 +23,7 @@ approved SDK harness, returning private-data-minimized carrier/price options.
 Authenticated production schema compatibility remains unverified. Exact connected
 offers, once-only paid label dispatch, private artifacts, tracking, and unused-postage
 refunds are now integrated into the worker and exercised with SDK/Postgres fixtures.
-Connected returns and additional carrier/no-printer paths remain incomplete. Hosted-service rates are explicitly live-provider evidence even when
+Connected return preparation supports fresh consent, reversed private addresses, buyer packing and drop-off research. Return postage purchase and no-printer paths remain incomplete. Hosted-service rates are explicitly live-provider evidence even when
 the surrounding commerce exchange is in test mode.
 The founder selected seller-paid postage with Stripe reimbursement. Saved offer
 funding, exact approval disclosures, Stripe transfer/reversal and payout amounts
@@ -308,7 +308,7 @@ research location using `verify_dropoff`. The seller Actions screen shows the
 public location and official source with current/stale status, hours and expiry.
 Changing shipping inputs, disclosure consent, service connection, discovery area
 or rate validity invalidates its binding. The first credential-free verifier
-supports actual FedEx Ground location pages for a printed label; it refuses QR
+supports actual FedEx Ground and UPS Store Ground location pages for a printed label; it refuses QR
 return claims, generic finder pages and unsupported services. No postage is bought
 and no appointment is booked by this check. The exact connected offer and paid
 lifecycle are still unfinished. See `agent-service-research.md` for the live public
@@ -435,3 +435,51 @@ broader supported carrier/drop-off/no-printer paths, account-lifetime recovery,
 full positive model-driven acceptance and persistent deployment. Founder-controlled
 service authorization, Stripe onboarding/credentials, real payments, phones,
 physical handoff/delivery and review/merge remain distinct acceptance steps.
+
+
+### Connection lifetime, return preparation and UPS locations (September 25)
+
+The worker renews expiring OAuth grants on active exchanges and unresolved postage
+refunds. A same-scope refresh with the same inspected tool catalogue preserves the
+original authority generation without extending any consent or offer deadline.
+Changed scopes/catalogues and browser reauthorization invalidate old spending
+authority. A concurrent disconnect fences late responses. An ambiguous refresh
+is never replayed; the owner must reconnect. Omitted unchanged refresh tokens and
+scopes are retained according to RFC 6749 section 6.
+
+A paid or refunded exchange permits reauthorization of its original bound seller
+connection. Current capability descriptions can be prepared again after a new
+generation, including after cancellation. This enables known-transaction tracking
+and refund recovery without granting another purchase.
+
+A mutually approved return can now prepare a separate free shipping-data consent.
+It binds the resolution, buyer return packing, reversed original address versions,
+seller connection and a new deadline. Both owners approve independently. The
+seller's agent uses the existing typed validation/rate/carrier tools; the buyer's
+agent sees only approved public rate facts and performs its own postcode research
+and location check. Old outbound receipts cannot stand in for return evidence.
+Connected return-quote requests wake both agents instead of queuing legacy
+platform postage. Additional return-postage funding and purchase remain pending;
+no return payment or label is claimed by these preparation steps.
+
+The public drop-off adapter also supports UPS Ground at an observed official
+UPS Store page. It parses the public serialized profile without evaluating
+scripts, checks location identity/open status, published Ground drop-off support,
+package limits, regular and holiday hours, and the pilot's below-$1,000 value
+limit. The app shows the handoff restrictions with the offer and drop-off. It
+requires a printed prepaid label; listing a printing service does not establish
+a free no-printer path. This does not require platform UPS credentials.
+
+Sources checked September 25:
+- [Official UPS Store location and drop-off FAQ](https://locations.theupsstore.com/ny/new-york/1632-1st-ave).
+- [UPS package limits](https://www.ups.com/us/en/support/shipping-support/shipping-dimensions-weight/avoid-additional-shipping-fees).
+- [Shippo carrier and service tokens](https://docs.goshippo.com/shippoapi/public-api/service-levels/other-supported-carriers).
+- [USPS Label Broker](https://www.usps.com/business/label-broker.htm) requires a
+  participating location. The public USPS locator returned a browser challenge
+  during this run; no local Label Broker capability was inferred or claimed.
+
+The actual server public-fetch transport and parser verified UPS Store #6584
+(Ground/PDF, hours and restrictions) on September 25 at 16:16:51 UTC. That was a
+read-only public lookup, not a booking or postage purchase. Automated tests use
+synthetic pages and authenticated SDK fixtures. The return preparation database
+test exercises a FedEx outbound order with a separately checked UPS return option.

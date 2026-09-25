@@ -75,6 +75,10 @@ try {
   assert(!JSON.stringify(receipt).includes('CANARY'));
   assert.equal((await connections.decideAction(A,first.id,first.digest,true)).state,'returned');assert.equal(calls,1);
   assert.equal((await prepare('CreateShipment')).id,first.id,'identical completed calls require reconciliation, not silent repetition');
+  const newGeneration=randomUUID();await pool.query('update pilot_connections set generation=$2 where id=$1',[connection,newGeneration]);
+  const redescribed=await prepare('CreateShipment');assert.notEqual(redescribed.id,first.id,'A new authorization needs current-generation descriptions');
+  await pool.query("update pilot_service_actions set state='declined' where id=$1",[redescribed.id]);
+  await pool.query('update pilot_connections set generation=$2 where id=$1',[connection,generation]);
   const state=await commerce.get(A,e.id);assert.equal(state.payment,'unpaid');assert.equal(state.shipping,'none');
   const agentState=await commerce.invoke({userId:B,runId:randomUUID(),requestMessageId:randomUUID()},{action:'state',exchangeId:e.id});
   assert(!JSON.stringify(agentState).includes('remote-receipt'));assert(!JSON.stringify(agentState).includes('937123'));
@@ -101,11 +105,17 @@ try {
   const expiredAccess=await prepare('Expired access');await pool.query("update pilot_connections set access_expires_at=now() where id=$1",[connection]);
   assert.equal((await connections.decideAction(A,expiredAccess.id,expiredAccess.digest,true)).state,'failed');assert.equal(calls,2);
   await pool.query("update pilot_connections set access_expires_at=now()+interval '1 hour' where id=$1",[connection]);
+  const beforeRecovery=await repository.get(e.id,A);
+  const recovery={...beforeRecovery,payment:'refunded' as const,stage:'cancelled' as const,cancellationRequested:true,problem:'Recover the original postage refund.'};
+  await pool.query('update pilot_exchanges set data=$2 where id=$1',[e.id,recovery]);
+  const recoveryDescription=await prepare('RefundRecovery');expectedAction=recoveryDescription.id;
+  assert.equal((await connections.decideAction(A,recoveryDescription.id,recoveryDescription.digest,true)).state,'returned');assert.equal(calls,3);
+  await pool.query('update pilot_exchanges set data=$2 where id=$1',[e.id,beforeRecovery]);
   const revoked=await prepare('Revoked');expectedAction=revoked.id;
   waitOnList=new Promise(resolve=>{release=resolve;});const listing=new Promise<void>(resolve=>{onList=resolve;});
   const pending=connections.decideAction(A,revoked.id,revoked.digest,true);await listing;
   await connections.disconnect(A,connection);release();
-  assert.equal((await pending).state,'failed');assert.equal(calls,2);waitOnList=undefined;onList=undefined;
+  assert.equal((await pending).state,'failed');assert.equal(calls,3);waitOnList=undefined;onList=undefined;
   await assert.rejects(prepare('Disconnected'),/Connect and inspect/);
   // Force timestamp ties to exercise stable cursor ordering without dropping
   // rows due to JS millisecond truncation or leaking another owner's cursor.

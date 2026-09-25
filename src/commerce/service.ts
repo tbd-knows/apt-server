@@ -10,12 +10,12 @@ import {
 } from './domain.js';
 import { CommerceRepository, emptyPrivateInput } from './repository.js';
 import { harnessContext } from './harness.js';
-import { CommerceResearch, researchInputSchema } from './research.js';
+import { CommerceResearch, researchInputSchema,requireResearchExchange } from './research.js';
 import { listConnections } from './connections.js';
 import { listServiceActions,prepareServiceAction,serviceActionSchema,serviceActionHistory,serviceHistorySchema } from './service-actions.js';
-import { proposeShippingData, decideShippingData, shippingDataView } from './shipping-consent.js';
+import { proposeShippingData, decideShippingData, shippingDataView,requireReturnPlanning } from './shipping-consent.js';
 import { prepareShippingValidation,shippingValidationSchema } from './shipping-validation.js';
-import { prepareShippingOption,shippingOptionSchema } from './shipping-option.js';
+import { prepareShippingOption,shippingOptionSchema,returnShippingOptions } from './shipping-option.js';
 import { prepareShippingRates,shippingRatesSchema } from './shipping-rates.js';
 import { verifyDropoff,verifyDropoffSchema,verifiedDropoffView } from './verified-dropoff.js';
 import { prepareConnectedOffer,connectedOfferSchema,connectedOfferDraftView,shareConnectedOffer,requireConnectedOffer,type OfferEconomics } from './connected-offer.js';
@@ -60,6 +60,7 @@ export class CommerceService {
       verifiedDropoff,
       connectedOfferDraft:connectedOfferDraftView(connectedOfferDraft,e.revision,this.now(),verifiedDropoff?.state==='current' && verifiedDropoff.id===connectedOfferDraft?.shipping.dropoffId),
       shippingData: await shippingDataView(this,e,actor,this.now()),
+      returnShippingOptions:await returnShippingOptions(this,actor,id),
       operations, deliveries: await this.deliveries(actor, id), research: await this.research.list(actor,id),connections:await listConnections(this,actor,id),serviceActions:await listServiceActions(this,actor,id),
       execution: { connectedShippingReady,
         checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
@@ -133,7 +134,7 @@ export class CommerceService {
           await decideShippingData(this,sql,e,actor,command.consentId,command.consentDigest,command.approve,command.acknowledgeServiceAccountAccess,now);
           break;
         case 'decide_mcp_inspection': {
-          mutable(e,now);
+          requireResearchExchange(e,now);
           const data = await this.repository.privateInput(e,actor,sql);
           const result = await sql.query(`select * from pilot_research where id=$1 and exchange_id=$2 and owner_id=$3
             and mode=$4 and kind='inspect_mcp' and state='awaiting_approval' for update`,[command.researchId,e.id,actor,e.mode]);
@@ -145,7 +146,7 @@ export class CommerceService {
           break;
         }
         case 'research_area': {
-          mutable(e,now);
+          requireResearchExchange(e,now);
           const data = await this.repository.privateInput(e,actor,sql);
           data.discoveryPostcode = command.postcode;
           data.discoveryVersion = (data.discoveryVersion ?? 0) + 1;
@@ -153,7 +154,7 @@ export class CommerceService {
           break;
         }
         case 'retry_research': {
-          mutable(e,now);
+          requireResearchExchange(e,now);
           const mine = await this.repository.privateInput(e,actor,sql);
           const result = await sql.query(`update pilot_research set state='pending',attempts=2,lease_id=null,updated_at=now()
             where id=$1 and exchange_id=$2 and owner_id=$3 and mode=$4 and state='failed'
@@ -371,6 +372,13 @@ export class CommerceService {
         case 'return_quote': {
           if (!e.returnPlan || e.returnPlan.shipping !== 'none' || e.resolution?.id !== e.returnPlan.resolutionId) conflict('A mutually agreed return is required.');
           const data = await this.repository.privateInput(e, e.buyerId, sql);
+          if(currentOffer(e).connectedShipping) {
+            requireReturnPlanning(e);
+            if(!data.returnPacking) conflict('Confirm the return package dimensions and weight first.');
+            for(const recipient of [e.buyerId,e.sellerId]) await this.repository.message(sql,e,actor,recipient,'status',{
+              action:'prepare_connected_return',text:'Prepare a separate return option using fresh two-owner shipping-data consent, buyer return packing, the original seller service account and a buyer-compatible drop-off. This request does not approve postage.'});
+            break;
+          }
           if (!data.returnPacking?.canPrint) conflict('Confirm return packing and access to a printer first.');
           const destination = await this.repository.privateInput(e, e.sellerId, sql);
           e.returnPlan.quote = null; e.returnPlan.approvals = [];
@@ -527,6 +535,7 @@ export class CommerceService {
           verifiedDropoff,
           connectedOfferDraft:connectedOfferDraftView(prepared,e.revision,this.now(),verifiedDropoff?.state==='current' && verifiedDropoff.id===prepared?.shipping.dropoffId),
           shippingData: await shippingDataView(this,e,actor,this.now()),
+          returnShippingOptions:await returnShippingOptions(this,actor,e.id),
           deliveries: await this.deliveries(actor, e.id), research: await this.research.list(actor,e.id),connections:await listConnections(this,actor,e.id),serviceActions:serviceActions.slice(-5),serviceActionHistoryCursor:serviceActions.length>5?serviceActions.at(-5)!.id:null };
       }));
       const inbox = (await this.inbox(actor)).filter(m => !command.exchangeId || m.exchangeId === command.exchangeId).slice(0, 10)
@@ -555,8 +564,11 @@ export class CommerceService {
       if (e.mode !== this.mode) throw new AppError('NOT_FOUND', 'Exchange not found in this mode.');
       if (command.action === 'prepare_action') {
         if (e.revision !== command.revision) conflict('The exchange changed. Read the current state before preparing an action.');
-        if (['message', 'decline', 'quote', 'propose_shipping_data'].includes(command.command.type)) mutable(e, this.now());
-        if (command.command.type === 'propose_shipping_data') requireRole(e, actor, 'seller');
+        if (['message', 'decline', 'quote'].includes(command.command.type)) mutable(e, this.now());
+        if (command.command.type === 'propose_shipping_data') {
+          requireRole(e, actor, 'seller');
+          if(e.returnPlan) requireReturnPlanning(e); else mutable(e,this.now());
+        }
         if (command.command.type === 'decline') requireRole(e, actor, 'seller');
         if (command.command.type === 'checkout') requireRole(e, actor, 'buyer');
         const data = await this.repository.privateInput(e, actor, sql);

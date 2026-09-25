@@ -5,7 +5,7 @@ import { conflict,digest,exchangeView,requireRole,type Exchange } from './domain
 import type { CommerceService } from './service.js';
 import { serviceActionView,wakeServiceAction,expireServiceReviews,type ServiceActionRow } from './service-actions.js';
 import type { ServiceInvocation,ServiceResult } from './mcp-execution.js';
-import { requireShippingDataConsent } from './shipping-consent.js';
+import { requireShippingDataConsent,shippingAddressVersion } from './shipping-consent.js';
 import { requireShippoDescription,requireShippoWrapper } from './shipping-validation.js';
 import { shippoPayload,shippoShipment,shippoShipmentArguments,type ShippoShipmentBinding } from './shippo-evidence.js';
 
@@ -79,7 +79,7 @@ async function requireValidatedAddresses(sql:PoolClient,e:Exchange,connectionId:
   for(const owner of [e.buyerId,e.sellerId]) {
     const row=rows.find(row=>row.invocation.shippingValidation?.consentId===consentId
       && row.invocation.shippingValidation.addressOwnerId===owner);
-    if(!row || row.invocation.shippingValidation!.addressVersion!==(owner===e.buyerId?e.shippingData!.destinationVersion:e.shippingData!.originVersion)
+    if(!row || row.invocation.shippingValidation!.addressVersion!==shippingAddressVersion(e,owner)
       || row.result?.structuredContent?.addressValidation!=='valid') conflict('Validate both current private addresses before requesting rates.');
   }
 }

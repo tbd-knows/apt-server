@@ -1,17 +1,17 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { AppError } from '../errors.js';
-import { conflict, digest, exchangeView, mutable } from './domain.js';
+import { conflict, digest, exchangeView, mutable, type Exchange } from './domain.js';
 import type { CommerceService } from './service.js';
 import { ConnectionOAuth, type ConnectionMetadata } from './connection-oauth.js';
 import { ConnectionSecrets } from './connection-secrets.js';
 import { inspectMcp, type McpInspection } from './mcp-inspection.js';
 import { publicEndpoint, publicEndpointFetch } from './public-http.js';
 import { executeMcp,type ServiceResult } from './mcp-execution.js';
-import { activeServiceExchange,serviceActionView,wakeServiceAction,type ServiceActionRow } from './service-actions.js';
+import { activeServiceInvocation,serviceActionView,wakeServiceAction,type ServiceActionRow } from './service-actions.js';
 import { requireCapabilityDiscovery } from './service-policy.js';
 import { requireAddressValidationContract } from './shipping-validation.js';
-import { requireShippingDataConsent } from './shipping-consent.js';
+import { requireShippingDataConsent,shippingAddressVersion } from './shipping-consent.js';
 import { shippoAddressArguments,shippoAddressValidation } from './shippo-evidence.js';
 import type { Address } from './domain.js';
 import type { PoolClient } from 'pg';
@@ -58,17 +58,29 @@ export class CommerceConnections {
     const e=await this.commerce.repository.get(row.exchange_id,actor);exchangeView(e,actor);
     return row;
   }
+  private async requireConnectionUse(e:Exchange,actor:string,id?:string,sql?:PoolClient) {
+    // A paid or refunded order still needs its original seller connection for
+    // canonical tracking/refund recovery. This cannot introduce another account
+    // or renew permission to spend against an old offer.
+    const input=await this.commerce.repository.privateInput(e,actor,sql);
+    if(id && actor===e.sellerId && e.offers.some(offer=>{
+      const shipping=input.connectedShipping?.[String(offer.version)];
+      return shipping?.connectionId===id && offer.connectedShipping?.authorizationId===shipping.authorizationId;
+    })) return true;
+    mutable(e,new Date());return false;
+  }
   async prepare(actor:string,exchangeId:string,researchId:string) {
     this.ready();this.commerce.authorize(actor);
     const row=await this.commerce.repository.transaction(async sql=>{
-      const e=await this.commerce.repository.get(exchangeId,actor,sql,true);exchangeView(e,actor);mutable(e,new Date());
+      const e=await this.commerce.repository.get(exchangeId,actor,sql,true);exchangeView(e,actor);
       if(e.mode!==this.commerce.mode) throw new AppError('NOT_FOUND','Exchange not found.');
+      const prior=(await sql.query<ConnectionRow>('select * from pilot_connections where owner_id=$1 and exchange_id=$2 and research_id=$3 and mode=$4',[actor,e.id,researchId,e.mode])).rows[0];
+      const recovery=await this.requireConnectionUse(e,actor,prior?.id,sql);
       const mine=await this.commerce.repository.privateInput(e,actor,sql);
       const found=await sql.query(`select * from pilot_research where id=$1 and owner_id=$2 and exchange_id=$3 and mode=$4
         and kind='inspect_mcp' and state='ready' and approved_at is not null`,[researchId,actor,e.id,e.mode]);
       const research=found.rows[0];
-      if(!research || research.input.addressVersion!==(mine.discoveryVersion ?? 0) || !['authorization_required','inspected'].includes(research.result?.mcp?.status)) conflict('Inspect the current service endpoint first.');
-      const prior=(await sql.query<ConnectionRow>('select * from pilot_connections where owner_id=$1 and exchange_id=$2 and research_id=$3 and mode=$4',[actor,e.id,researchId,e.mode])).rows[0];
+      if(!research || (!recovery && research.input.addressVersion!==(mine.discoveryVersion ?? 0)) || !['authorization_required','inspected'].includes(research.result?.mcp?.status)) conflict('Inspect the current service endpoint first.');
       if(prior) {
         if(prior.state==='revoked' || prior.state==='failed' && !prior.metadata || prior.state==='discovering' && prior.updated_at.getTime()<Date.now()-90_000) {
           const retry=await sql.query<ConnectionRow>("update pilot_connections set state='discovering',generation=$2,metadata=null,binding_digest=null,updated_at=now(),failure=null where id=$1 returning *",[prior.id,randomUUID()]);
@@ -94,10 +106,11 @@ export class CommerceConnections {
   }
   async start(actor:string,id:string,bindingDigest:string) {
     this.ready();const owned=await this.owned(actor,id);
-    const e=await this.commerce.repository.get(owned.exchange_id,actor);mutable(e,new Date());
+    const e=await this.commerce.repository.get(owned.exchange_id,actor);
+    const recovery=await this.requireConnectionUse(e,actor,id);
     const mine=await this.commerce.repository.privateInput(e,actor);
     const research=(await this.commerce.repository.pool.query('select input from pilot_research where id=$1',[owned.research_id])).rows[0];
-    if(research?.input.addressVersion!==(mine.discoveryVersion ?? 0)) conflict('The service was discovered for a previous area. Ask your agent to review the current area.');
+    if(!recovery && research?.input.addressVersion!==(mine.discoveryVersion ?? 0)) conflict('The service was discovered for a previous area. Ask your agent to review the current area.');
     if(!owned.metadata || owned.binding_digest!==bindingDigest) conflict('Connection details changed. Review them again.');
     const state=randomBytes(32).toString('base64url');
     const row=(await this.commerce.repository.pool.query<ConnectionRow>(`update pilot_connections set state='starting',state_hash=$3,generation=$4,
@@ -144,21 +157,51 @@ export class CommerceConnections {
   async recheck(actor:string,id:string) {
     const owned=await this.owned(actor,id);
     const claimed=(await this.commerce.repository.pool.query<ConnectionRow>(`update pilot_connections set state='exchanging',generation=$2,expires_at=now()+interval '2 minutes',updated_at=now()
-      where id=$1 and (state='connected' or (state='exchanging' and expires_at<now())) returning *`,[id,randomUUID()])).rows[0];
+      where id=$1 and generation=$3 and state='connected' returning *`,[id,randomUUID(),owned.generation])).rows[0];
     if(!claimed) conflict('Finish or restart service authorization before rechecking.');
     try {
       const saved=this.credentials(claimed);let tokens=saved.tokens;
       if(!tokens) throw new Error('No tokens');
+      const originalScope=tokens.scope ?? claimed.metadata!.scopes.join(' ');
       if(!claimed.access_expires_at || claimed.access_expires_at.getTime()<=Date.now()+60_000) {
         if(!tokens.refresh_token) throw new Error('Reconnect required');
-        tokens=await this.oauth.refresh(claimed.metadata!,saved.client!,tokens.refresh_token);
+        const refreshed=await this.oauth.refresh(claimed.metadata!,saved.client!,tokens.refresh_token);
+        // RFC 6749 permits omission of an unchanged scope or refresh token.
+        // Keep the original grant material unless the issuer rotates it.
+        tokens={...refreshed,refresh_token:refreshed.refresh_token ?? tokens.refresh_token,
+          ...(refreshed.scope===undefined && tokens.scope!==undefined ? {scope:tokens.scope} : {})};
         const update=await this.commerce.repository.pool.query(`update pilot_connections set credentials=$2,access_expires_at=$3,updated_at=now()
           where id=$1 and state='exchanging' and generation=$4 returning id`,[id,this.secrets.seal(binding(claimed),{client:saved.client,tokens}),new Date(Date.now()+(tokens.expires_in ?? 3600)*1000),claimed.generation]);
         if(!update.rowCount) return view(await this.owned(actor,id));
       }
-      await this.finishInspection(claimed,'exchanging',this.sanitize(await this.inspect(claimed.endpoint,tokens.access_token),tokens));
+      const inspection=this.sanitize(await this.inspect(claimed.endpoint,tokens.access_token),tokens);
+      const scopes=(value:string)=>[...new Set(value.split(' ').filter(Boolean))].sort();
+      const unchanged=owned.state==='connected' && owned.inspection?.status==='inspected' && inspection.status==='inspected'
+        && digest(owned.inspection.tools)===digest(inspection.tools)
+        && digest(scopes(originalScope))===digest(scopes(tokens.scope ?? originalScope));
+      // The temporary generation is the lease fencing every late response.
+      // Restore the existing authority only after successful same-grant refresh
+      // and inspection. This never extends an offer or action's own expiry.
+      await this.finishInspection(claimed,'exchanging',inspection,unchanged ? owned.generation : undefined);
     } catch {await this.fail(claimed,'exchanging','Service access expired or could not be verified. Reconnect to authorize again.','reconnect_required');}
     return view(await this.owned(actor,owned.id));
+  }
+  async renewExpiring() {
+    // Rotate existing grants only; never start a new browser authorization or
+    // replay a refresh with an ambiguous outcome. Restrict work to this pilot.
+    const rows=(await this.commerce.repository.pool.query<{id:string;owner_id:string}>(`select c.id,c.owner_id
+      from pilot_connections c join pilot_exchanges e on e.id=c.exchange_id
+      where c.mode=$1 and c.owner_id=any($2::uuid[]) and c.state='connected'
+      and (c.access_expires_at is null or c.access_expires_at<=now()+interval '60 seconds')
+      and (e.data->>'stage' not in ('declined','expired','cancelled','completed')
+        or exists(select 1 from pilot_operations o where o.exchange_id=e.id and
+          (o.state in ('pending','running','uncertain') or (o.kind='label_refund' and o.state='succeeded'
+            and coalesce(o.result->>'refundStatus','pending') not in ('refunded','rejected')))))
+      order by c.access_expires_at nulls first limit 4`,[this.commerce.mode,this.commerce.founders])).rows;
+    for(const row of rows) {
+      try {await this.recheck(row.owner_id,row.id);}
+      catch(error) {if(!(error instanceof AppError)) throw error;}
+    }
   }
   async disconnect(actor:string,id:string) {
     await this.owned(actor,id);
@@ -175,9 +218,9 @@ export class CommerceConnections {
     const e=await this.commerce.repository.get(row.exchange_id,row.owner_id,sql,true);
     if(row.owner_id!==e.sellerId || ![e.buyerId,e.sellerId].includes(context.addressOwnerId)) conflict('Shipping validation belongs to another participant.');
     const inputs=await requireShippingDataConsent(this.commerce,sql,e,row.connection_id,context.consentId,new Date());
-    const buyer=context.addressOwnerId===e.buyerId;
-    const address=buyer?inputs.destination:inputs.origin;
-    if(context.addressVersion!==(buyer?e.shippingData!.destinationVersion:e.shippingData!.originVersion)
+    const isOrigin=context.addressOwnerId===(e.shippingData!.journey==='return'?e.buyerId:e.sellerId);
+    const address=isOrigin?inputs.origin:inputs.destination;
+    if(context.addressVersion!==shippingAddressVersion(e,context.addressOwnerId)
       || digest(row.invocation.arguments.arguments)!==digest(shippoAddressArguments(address))) conflict('The approved private shipping inputs changed.');
     return {address};
   }
@@ -194,7 +237,7 @@ export class CommerceConnections {
       if(approve) {
         if(purpose!==(row.invocation.shippingOption?'free_shipping_option':row.invocation.shippingRates?'free_shipping_rates':row.invocation.shippingValidation?'free_address_validation':'capability_discovery_only')) conflict('Review the correct service action purpose.');
         await this.checkActionPolicy(sql,row);
-        activeServiceExchange(e);
+        activeServiceInvocation(e,row.endpoint,row.invocation);
         if(row.revision!==e.revision || row.expires_at<=new Date()) conflict('Service action expired or the exchange changed. Ask your agent to prepare it again.');
         if(connection.owner_id!==actor || connection.exchange_id!==e.id || connection.mode!==e.mode || connection.state!=='connected'
           || connection.generation!==row.generation || connection.endpoint!==row.endpoint) conflict('Service access changed. Review the connection again.');
@@ -219,7 +262,7 @@ export class CommerceConnections {
       };
       outcome=await this.execute(claimed.row.endpoint,claimed.row.invocation,async()=>{
         await this.commerce.repository.transaction(async sql=>{
-          const e=await this.commerce.repository.get(claimed.row.exchange_id,actor,sql,true);activeServiceExchange(e);
+          const e=await this.commerce.repository.get(claimed.row.exchange_id,actor,sql,true);activeServiceInvocation(e,claimed.row.endpoint,claimed.row.invocation);
           const policy=await this.checkActionPolicy(sql,claimed.row);
           validatedAddress=policy?.address;rateBinding=policy?.rates;optionBinding=policy?.option;
           const connection=(await sql.query<ConnectionRow>('select * from pilot_connections where id=$1 for update',[claimed.row.connection_id])).rows[0]!;
@@ -271,10 +314,10 @@ export class CommerceConnections {
       return serviceActionView((await sql.query<ServiceActionRow>('select * from pilot_service_actions where id=$1',[id])).rows[0]!);
     });
   }
-  private async finishInspection(row:ConnectionRow,state:string,inspection:McpInspection) {
-    return this.updateAndWake(`update pilot_connections set state=$3,inspection=$4,updated_at=now(),failure=$5
+  private async finishInspection(row:ConnectionRow,state:string,inspection:McpInspection,restoredGeneration?:string) {
+    return this.updateAndWake(`update pilot_connections set state=$3,inspection=$4,updated_at=now(),failure=$5,generation=coalesce($7::uuid,generation)
       where id=$1 and state=$2 and generation=$6 returning *`,[row.id,state,inspection.status==='inspected'?'connected':'reconnect_required',inspection,
-      inspection.status==='inspected'?null:'Service access could not be verified. Reconnect or choose another service.',row.generation]);
+      inspection.status==='inspected'?null:'Service access could not be verified. Reconnect or choose another service.',row.generation,restoredGeneration ?? null]);
   }
   private sanitize(inspection:McpInspection,tokens:OAuthTokens) {
     let text=JSON.stringify(inspection);

@@ -5,7 +5,7 @@ import { CommerceRepository } from './repository.js';
 import { CommerceService } from './service.js';
 import { decimalMinor, EasyPostProvider, ProviderFailure, StripeProvider, type PaymentFact, type Shipment } from './providers.js';
 import { FedExLocations } from './locations.js';
-import { recoverConnections } from './connections.js';
+import { recoverConnections, type CommerceConnections } from './connections.js';
 import { recoverServiceActions } from './service-actions.js';
 import type { ConnectedShipping } from './connected-shipping.js';
 import type { shippoTracking, ShippoTransactionEvidence } from './shippo-evidence.js';
@@ -15,7 +15,7 @@ function operation(row: Record<string, unknown>): Operation {
     state: row.state as Operation['state'], attempts: Number(row.attempts), providerId: row.provider_id as string | null,
     result: row.result as Operation['result'], createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString() };
 }
-export interface CommerceProviders { stripe: StripeProvider; shipping: EasyPostProvider; locations: FedExLocations; connectedShipping?: ConnectedShipping }
+export interface CommerceProviders { stripe: StripeProvider; shipping: EasyPostProvider; locations: FedExLocations; connectedShipping?: ConnectedShipping; connections?:CommerceConnections }
 export class CommerceWorker {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopping = false;
@@ -32,6 +32,7 @@ export class CommerceWorker {
   }
   async stop() { this.stopping = true; clearTimeout(this.timer); await this.active; }
   async tick() {
+    await this.providers.connections?.renewExpiring();
     const rows = await this.repository.pool.query(`select * from public.pilot_operations where mode=$1
       and ((state in ('pending','running','uncertain') and attempts<5) or (state='succeeded' and kind in ('checkout','label','payout','label_refund','return_label')))
       and (attempts=0 or updated_at < now()-case when state='succeeded' and kind in ('payout','label_refund') then interval '5 minutes' else interval '30 seconds' end)

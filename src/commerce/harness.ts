@@ -27,13 +27,27 @@ export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, b
   if (e.shipping === 'label_ready' && !e.sellerDroppedAt) missing.push(buyerRole ? 'seller_physical_handoff' : 'owner_physical_handoff');
   if (e.shipping === 'in_transit') missing.push('carrier_delivery');
   if (e.shipping === 'delivered' && !e.buyerReceivedAt) missing.push(buyerRole ? 'owner_receipt_confirmation' : 'buyer_receipt_confirmation');
+  if(e.returnPlan) {
+    if(e.returnPlan.shipping==='none') {
+      if(!buyer.returnPacking) missing.push(buyerRole?'owner_return_packing':'buyer_return_packing');
+      if(e.shippingData?.journey!=='return' || e.shippingData.declined
+        || Date.parse(e.shippingData.expiresAt)<=now.getTime()
+        || ![e.buyerId,e.sellerId].every(id=>e.shippingData!.approvedBy.includes(id))) missing.push('return_shipping_data_permission');
+      if(!e.returnPlan.quote) missing.push('verified_return_shipping_option');
+    }
+    if(e.returnPlan.shipping==='label_pending') missing.push('provider_return_postage_confirmation');
+    if(e.returnPlan.shipping==='label_ready' && !e.returnPlan.droppedAt) missing.push(buyerRole?'owner_return_handoff':'buyer_return_handoff');
+    if(e.returnPlan.shipping==='in_transit') missing.push('return_carrier_delivery');
+    if(e.returnPlan.shipping==='delivered' && !e.returnPlan.receivedAt) missing.push(buyerRole?'seller_return_receipt':'owner_return_receipt');
+  }
   if (e.problem || e.stage === 'needs_attention') missing.push('resolution');
   const closed = ['cancelled', 'declined', 'expired', 'completed'].includes(e.stage);
   return {
     missing: closed ? [] : missing, closed,
     privateBudget: mine.budget,
     inputs: { ownerAddressProvided: !!mine.address, bothAddressesProvided: !!buyer.address && !!seller.address,
-      sellerPackingProvided: !!seller.packing, sellerCanPrint: seller.packing?.canPrint ?? null },
+      sellerPackingProvided: !!seller.packing, sellerCanPrint: seller.packing?.canPrint ?? null,
+      returnPackingProvided:!!buyer.returnPacking,returnSenderCanPrint:buyer.returnPacking?.canPrint ?? null },
     preparedAction: mine.agentAction ?? null,
     discoveryAreaProvided: !!mine.discoveryPostcode,
     authority: 'Prepare one specific action for review, then stop. Human approvals and provider facts are checked independently.',

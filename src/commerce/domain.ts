@@ -33,6 +33,7 @@ export type Mode = 'test' | 'live';
 
 export interface Dropoff {
   providerId: string; name: string; address: string; hours: string; mapUrl: string;
+  restrictions?: string;
   checkedAt: string; carrier: string; service: string; artifact: 'pdf' | 'label_qr';
 }
 export interface Quote {
@@ -101,6 +102,8 @@ export const preparedCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('propose_shipping_data'), connectionId: z.uuid() }).strict(),
 ]);
 export interface ShippingDataConsent {
+  /** Historical permissions without a journey cover the original sale only. */
+  journey?: 'return'; resolutionId?: string;
   id: string; connectionId: string; generation: string; endpoint: string; accountOwnerId: string;
   originVersion: number; destinationVersion: number; packingVersion: number;
   expiresAt: string; digest: string; approvedBy: string[]; declined: boolean;

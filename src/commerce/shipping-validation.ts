@@ -4,7 +4,7 @@ import { conflict,digest,exchangeView,requireRole,type Address } from './domain.
 import type { CommerceService } from './service.js';
 import type { ServiceActionRow } from './service-actions.js';
 import { serviceActionView,wakeServiceAction,expireServiceReviews } from './service-actions.js';
-import { requireShippingDataConsent } from './shipping-consent.js';
+import { requireShippingDataConsent,shippingAddressVersion } from './shipping-consent.js';
 import { shippoAddressArguments } from './shippo-evidence.js';
 import type { ServiceInvocation } from './mcp-execution.js';
 import { publicEndpoint } from './public-http.js';
@@ -72,7 +72,7 @@ export async function prepareShippingValidation(commerce:CommerceService,actor:s
     if(e.mode!==commerce.mode || e.revision!==input.revision) conflict('The exchange changed. Read its current state.');
     const addresses=await requireShippingDataConsent(commerce,sql,e,input.connectionId,input.consentId,new Date());
     const addressOwnerId=input.addressRole==='buyer'?e.buyerId:e.sellerId;
-    const addressVersion=input.addressRole==='buyer'?e.shippingData!.destinationVersion:e.shippingData!.originVersion;
+    const addressVersion=shippingAddressVersion(e,addressOwnerId);
     const existing=(await sql.query<ServiceActionRow>('select * from pilot_service_actions where owner_id=$1 and turn_id=$2',[actor,turnId])).rows[0];
     if(existing) {
       const context=existing.invocation.shippingValidation;
@@ -89,7 +89,8 @@ export async function prepareShippingValidation(commerce:CommerceService,actor:s
     requireAddressDescription(described);
     const tool=connection.inspection?.tools.find(tool=>tool.name==='shippo_read_execute_tool');
     if(!tool) conflict('Inspect the service tools before requesting validation.');
-    const address:Address=input.addressRole==='buyer'?addresses.destination:addresses.origin;
+    const isOrigin=addressOwnerId===(e.shippingData!.journey==='return'?e.buyerId:e.sellerId);
+    const address:Address=isOrigin?addresses.origin:addresses.destination;
     const invocation:ServiceInvocation={tool,arguments:{name:'ValidateAddress',arguments:shippoAddressArguments(address)},
       shippingValidation:{consentId:input.consentId,addressOwnerId,addressVersion,descriptionActionId:input.descriptionActionId}};
     requireAddressValidationContract(connection.endpoint,invocation);

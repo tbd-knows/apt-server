@@ -17,6 +17,7 @@ let exchanges=0,refreshes=0,inspections=0;
 let waitForExchange:Promise<void>|undefined;
 let tokenRequestStarted:(()=>void)|undefined;
 let failRefresh=false;
+let omitRefreshMetadata=false,catalogChanged=false;
 const oauth=new ConnectionOAuth(async(url,init)=>{
   const href=String(url);
   const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json'}});
@@ -25,15 +26,16 @@ const oauth=new ConnectionOAuth(async(url,init)=>{
     response_types_supported:['code'],code_challenge_methods_supported:['S256'],token_endpoint_auth_methods_supported:['none'],client_id_metadata_document_supported:true});
   assert.equal(href,`${issuer}token`);
   const input=new URLSearchParams(String(init?.body));assert.equal(input.get('resource'),endpoint);
-  if(input.get('grant_type')==='refresh_token') {refreshes++;if(failRefresh) return json({error:'invalid_grant',error_description:'SECRET_PROVIDER_ERROR'},400);}
+  if(input.get('grant_type')==='refresh_token') {refreshes++;assert.equal(input.get('refresh_token'),'REFRESH_CANARY');if(failRefresh) return json({error:'invalid_grant',error_description:'SECRET_PROVIDER_ERROR'},400);}
   else {exchanges++;assert(input.get('code_verifier'));assert.equal(input.get('code'),'CODE_CANARY');}
   tokenRequestStarted?.();await waitForExchange;
-  return json({access_token:'ACCESS_CANARY',refresh_token:'REFRESH_CANARY',token_type:'Bearer',expires_in:3600,scope:'shipping:read'});
+  return json({access_token:'ACCESS_CANARY',token_type:'Bearer',expires_in:3600,
+    ...(input.get('grant_type')==='refresh_token' && omitRefreshMetadata ? {} : {refresh_token:'REFRESH_CANARY',scope:'shipping:read'})});
 });
 const inspect=async(url:string,token:string):Promise<McpInspection>=>{
   inspections++;assert.equal(url,endpoint);assert.equal(token,'ACCESS_CANARY');
   return {status:'inspected',transport:'streamable_http',authority:'untrusted_capabilities_only',schemaDigest:'f'.repeat(64),
-    tools:[{name:'track_package',description:'Untrusted remote echo ACCESS_CANARY',inputSchema:{type:'object'}}]};
+    tools:[{name:'track_package',description:catalogChanged?'Changed capability':'Untrusted remote echo ACCESS_CANARY',inputSchema:{type:'object'}}]};
 };
 const connections=()=>new CommerceConnections(service,'k'.repeat(32),'https://app.tbd.com',oauth,inspect);
 try {
@@ -70,8 +72,37 @@ try {
   await assert.rejects(live.recheck(A,prepared.id),/not found/);
   const stored=(await pool.query('select credentials from pilot_connections where id=$1',[prepared.id])).rows[0].credentials;
   assert(!stored.includes('ACCESS_CANARY'));assert(!stored.includes('REFRESH_CANARY'));
+  const generation=async()=>(await pool.query('select generation from pilot_connections where id=$1',[prepared.id])).rows[0].generation;
+  const originalGeneration=await generation();
   await pool.query("update pilot_connections set access_expires_at=now()-interval '1 minute' where id=$1",[prepared.id]);
   assert.equal((await connections().recheck(A,prepared.id)).state,'connected');assert.equal(refreshes,1);
+  assert.equal(await generation(),originalGeneration,'Same grant/catalog refresh must not invalidate exact approvals');
+  await connections().recheck(A,prepared.id);assert.equal(refreshes,1);assert.equal(await generation(),originalGeneration);
+  // Automatic maintenance retains an omitted non-rotated refresh token and
+  // scope, allowing the next refresh without another browser login.
+  omitRefreshMetadata=true;
+  await pool.query("update pilot_connections set access_expires_at=now()+interval '30 seconds' where id=$1",[prepared.id]);
+  await connections().renewExpiring();assert.equal(refreshes,2);assert.equal(await generation(),originalGeneration);
+  await pool.query("update pilot_connections set access_expires_at=now()-interval '1 minute' where id=$1",[prepared.id]);
+  await connections().renewExpiring();assert.equal(refreshes,3);assert.equal(await generation(),originalGeneration);
+  omitRefreshMetadata=false;
+  catalogChanged=true;await connections().recheck(A,prepared.id);
+  assert.notEqual(await generation(),originalGeneration,'Changed capabilities must invalidate old authority');catalogChanged=false;
+  await connections().recheck(A,prepared.id);
+  // Concurrent refreshes have one lease; disconnect fences a late token and
+  // inspection response even when its predecessor generation was approved.
+  await pool.query("update pilot_connections set access_expires_at=now()-interval '1 minute' where id=$1",[prepared.id]);
+  let finishRefresh!:()=>void;
+  waitForExchange=new Promise<void>(resolve=>{finishRefresh=resolve;});
+  const refreshStarted=new Promise<void>(resolve=>{tokenRequestStarted=resolve;});
+  const refreshing=connections().recheck(A,prepared.id);await refreshStarted;
+  await assert.rejects(connections().recheck(A,prepared.id),/Finish or restart/);
+  const inFlightGeneration=await generation();await connections().disconnect(A,prepared.id);finishRefresh();await refreshing;
+  assert.equal((await listConnections(service,A,draft.id))[0]!.state,'revoked');assert.notEqual(await generation(),inFlightGeneration);
+  waitForExchange=undefined;tokenRequestStarted=undefined;
+  const refreshedReview=await connections().prepare(A,draft.id,researchId);
+  const refreshedStart=await connections().start(A,prepared.id,refreshedReview.bindingDigest!);
+  assert.equal(await connections().callback(new URL(refreshedStart.url!).searchParams.get('state')!,'CODE_CANARY'),true);
   failRefresh=true;
   await pool.query("update pilot_connections set access_expires_at=now()-interval '1 minute' where id=$1",[prepared.id]);
   assert.equal((await connections().recheck(A,prepared.id)).state,'reconnect_required');
@@ -101,6 +132,41 @@ try {
   const wakes=await pool.query("select count(*)::int n from pilot_messages where exchange_id=$1 and payload->>'action'='connection_update'",[draft.id]);
   await recoverConnections(service);
   assert.equal((await pool.query("select count(*)::int n from pilot_messages where exchange_id=$1 and payload->>'action'='connection_update'",[draft.id])).rows[0].n,wakes.rows[0].n);
+  // An expired refresh lease has an unknown outcome. It must never replay the
+  // old refresh token, even if the process was interrupted before persistence.
+  await pool.query("update pilot_connections set state='exchanging',expires_at=now()-interval '1 minute' where id=$1",[prepared.id]);
+  const beforeRecoveryRefreshes=refreshes;
+  await assert.rejects(connections().recheck(A,prepared.id),/Finish or restart/);
+  await connections().renewExpiring();assert.equal(refreshes,beforeRecoveryRefreshes);
+  await recoverConnections(service);
+  assert.equal((await listConnections(service,A,draft.id))[0]!.state,'reconnect_required');
+  // Paid-order recovery belongs only to the original seller's bound account.
+  // Use a separate fixture so the buyer-owned discovery above cannot inherit
+  // this authority merely by being a participant in the order.
+  const recovery=await service.create(B,randomUUID(),{request:{item:'Shoes',style:'White',size:'10',sizingSystem:'US men',condition:'Good'},privateBudget:937123});
+  await service.command(B,recovery.id,randomUUID(),recovery.revision,{type:'share_request',requestDigest:recovery.requestDigest});
+  const recoveryResearch=randomUUID();
+  await pool.query(`insert into pilot_research(id,exchange_id,owner_id,mode,kind,input,input_hash,state,approved_at,result)
+    values($1,$2,$3,'test','inspect_mcp',$4,$5,'ready',now(),$6)`,[recoveryResearch,recovery.id,A,{url:endpoint,addressVersion:0},randomUUID(),
+    {sources:[],checkedAt:new Date().toISOString(),verifiedForFulfillment:false,mcp:{status:'authorization_required'}}]);
+  const recoveryConnection=await connections().prepare(A,recovery.id,recoveryResearch);
+  await pool.query(`update pilot_exchanges set data=data||$2::jsonb where id=$1`,[recovery.id,
+    {payment:'refunded',stage:'cancelled',cancellationRequested:true,offers:[{version:1,item:{sellerAmount:1000},quote:{shippingAmount:500},
+      taxAmount:0,feeAmount:0,buyerTotal:1500,currency:'USD',postageFunding:'seller_reimbursed',
+      connectedShipping:{authorizationId:'fixture-bound-authority'}}]}]);
+  await assert.rejects(connections().start(A,recoveryConnection.id,recoveryConnection.bindingDigest!),/cannot be changed/);
+  await service.repository.transaction(async sql=>{
+    const order=await service.repository.get(recovery.id,A,sql);
+    const input=await service.repository.privateInput(order,A,sql);
+    await sql.query(`insert into pilot_private_inputs(exchange_id,owner_id,data) values($1,$2,$3)
+      on conflict(exchange_id,owner_id) do update set data=excluded.data`,[order.id,A,{...input,discoveryVersion:99,
+      connectedShipping:{'1':{connectionId:recoveryConnection.id,authorizationId:'fixture-bound-authority'}}}]);
+  });
+  const recoveryStart=await connections().start(A,recoveryConnection.id,recoveryConnection.bindingDigest!);
+  assert.equal(await connections().callback(new URL(recoveryStart.url!).searchParams.get('state')!,'CODE_CANARY'),true);
+  await connections().disconnect(A,recoveryConnection.id);
+  assert.equal((await connections().prepare(A,recovery.id,recoveryResearch)).state,'review');
+  await assert.rejects(connections().prepare(B,recovery.id,recoveryResearch),/cannot be changed/);
   const protection=await pool.query("select relrowsecurity,relforcerowsecurity,has_table_privilege('authenticated','public.pilot_connections','select') as client from pg_class where oid='public.pilot_connections'::regclass");
   assert.deepEqual(protection.rows[0],{relrowsecurity:true,relforcerowsecurity:true,client:false});
   assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[draft.id])).rows[0].n,0);

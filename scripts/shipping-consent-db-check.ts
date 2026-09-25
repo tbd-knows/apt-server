@@ -203,5 +203,42 @@ try {
   assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[draft.id])).rows[0].n,0,'Disclosure permission must not queue purchases or claims');
   assert.equal((await service().get(B,draft.id)).payment,'unpaid');
   assert.equal((await service().get(B,draft.id)).shipping,'none');
+  // A return has its own two-owner consent, sender and packing. The original
+  // sale's expired disclosure cannot authorize reverse address disclosure.
+  await pool.query("update pilot_connections set state='connected',generation=$2 where id=$1",[connection,generation]);
+  const resolutionId=randomUUID(),authorizationId=randomUUID();
+  await pool.query(`update pilot_exchanges set data=data||$2::jsonb where id=$1`,[draft.id,{
+    payment:'paid',stage:'needs_attention',shipping:'delivered',cancellationRequested:true,problem:'Return agreed',expiresAt:'2020-01-01T00:00:00Z',
+    offers:[{version:1,item:{sellerAmount:5000},quote:{shippingAmount:500},taxAmount:0,feeAmount:0,buyerTotal:5500,currency:'USD',
+      postageFunding:'seller_reimbursed',connectedShipping:{authorizationId}}],
+    resolution:{id:resolutionId,remedy:'return',reason:'Fixture return',offerDigest:'fixture',amount:5500,currency:'USD',expiresAt:new Date(Date.now()+86400000).toISOString(),approvedBy:[A,B]},
+    returnPlan:{resolutionId,version:0,quote:null,subsidy:'',approvals:[],shipping:'none',droppedAt:null,carrierAcceptedAt:null,trackingUpdatedAt:null,receivedAt:null}}]);
+  await repository.transaction(async sql=>{
+    const e=await repository.get(draft.id,B,sql);
+    const seller=await repository.privateInput(e,B,sql);
+    await sql.query('update pilot_private_inputs set data=$3 where exchange_id=$1 and owner_id=$2',[e.id,B,
+      {...seller,connectedShipping:{'1':{connectionId:connection,authorizationId}}}]);
+  });
+  await assert.rejects(resolve(replacement.id),/expired/);
+  await assert.rejects(propose(),/packed dimensions/);
+  await command(A,draft.id,{type:'return_packing',packing:{weightOz:41,lengthIn:14,widthIn:9,heightIn:7,packed:true,canPrint:true}});
+  const returnPermission=(await propose()).shippingData!;
+  assert.equal(returnPermission.purpose,'free_return_shipping_rates_only');
+  await decide(A);await assert.rejects(resolve(returnPermission.id),/Both owners/);await decide(B);
+  const reverse=await resolve(returnPermission.id);
+  assert.equal(reverse.origin.street2,'Changed private address');assert.equal(reverse.destination.street2,'SELLER_PRIVATE_ADDRESS_CANARY');
+  assert.equal(reverse.packing.weightOz,41,'Return uses buyer packing rather than outbound seller packing');
+  const reverseLookup=await prepareShippingValidation(service(),B,randomUUID(),{...await validationInput(),consentId:returnPermission.id});
+  const reverseInvocation=(await pool.query('select invocation from pilot_service_actions where id=$1',[reverseLookup.id])).rows[0].invocation;
+  assert.equal(reverseInvocation.arguments.arguments.address_line_2,'Changed private address');
+  assert.equal(reverseInvocation.shippingValidation.addressVersion,(await service().get(A,draft.id)).privateInput.addressVersion);
+  assert(!JSON.stringify(reverseLookup).includes('Changed private address'));
+  await command(A,draft.id,{type:'return_packing',packing:{weightOz:42,lengthIn:14,widthIn:9,heightIn:7,packed:true,canPrint:true}});
+  await assert.rejects(resolve(returnPermission.id),/inputs or connection changed/);
+  await assert.rejects(connections.decideAction(B,reverseLookup.id,reverseLookup.digest,true,'free_address_validation'),/inputs or connection changed/);
+  const refreshedReturn=(await propose()).shippingData!;await decide(A);await decide(B);
+  await pool.query(`update pilot_exchanges set data=jsonb_set(data,'{resolution,approvedBy}',$2::jsonb) where id=$1`,[draft.id,JSON.stringify([B])]);
+  await assert.rejects(resolve(refreshedReturn.id),/inputs or connection changed/);
+  assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[draft.id])).rows[0].n,0);
   process.stdout.write('PASS: two-owner private data consent, exact form/connection/expiry binding, owner-model isolation, withdrawal, restart, actual SDK free-validation fixture, private correction routing, replay/uncertainty; no external provider calls or purchases.\n');
 } finally { await pool.end(); }
