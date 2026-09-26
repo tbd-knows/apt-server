@@ -54,7 +54,8 @@ const children: ChildProcess[] = [];
 const diagnostics: string[] = [];
 let fixtureExchangeId: string | null = null;
 let proposed = false;
-let positiveStep: {index:number;exchangeId:string;input:()=>Promise<unknown>} | null = null;
+let positiveStep: {index:number;exchangeId:string;input:()=>Promise<unknown>;excludedRunIds:Set<string>} | null = null;
+const positiveRunIds = new Set<string>();
 let positiveCalls=0;
 let authClosed = false;
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -102,10 +103,19 @@ const model = createServer(async (request, response) => {
     }
   }
   if(acceptsTools && positiveStep && request.headers.authorization===`Bearer fixture-provider-${positiveStep.index}` && raw.includes(positiveStep.exchangeId)) {
-    const step=positiveStep;positiveStep=null;positiveCalls++;
-    call={id:`call_positive_${positiveCalls}`,type:'function',function:{name:'tool_call',arguments:JSON.stringify({
-      name:'mcp__apt__apt_commerce',arguments:await step.input(),
-    })}};
+    const step=positiveStep;
+    // A prepared result can be visible before Hermes finishes that turn's
+    // follow-up model request. Never feed the next scripted preparation into
+    // an already-running turn: production permits one preparation per turn.
+    const active=(await pool.query<{id:string}>(`select id from agent_runs where user_id=$1
+      and status in ('queued','running','stopping')`,[actors[step.index]])).rows;
+    const run=active.length===1?active[0]:undefined;
+    if(positiveStep===step && run && !step.excludedRunIds.has(run.id) && !positiveRunIds.has(run.id)) {
+      positiveStep=null;positiveCalls++;positiveRunIds.add(run.id);
+      call={id:`call_positive_${positiveCalls}`,type:'function',function:{name:'tool_call',arguments:JSON.stringify({
+        name:'mcp__apt__apt_commerce',arguments:await step.input(),
+      })}};
+    }
   }
   const output = 'An approved commerce message needs your attention. I am waiting for your decision.';
   if (body.stream) {
@@ -254,7 +264,9 @@ try {
   const ledger = await pool.query('select a2a_task_id from pilot_messages where id=any($1::uuid[])', [[message.id,decline.id]]);
   assert(ledger.rows.every(r=>r.a2a_task_id));
   const nativeStep:NativeAgentStep=async(index,exchangeId,input,check,label)=>{
-    assert.equal(positiveStep,null);positiveStep={index,exchangeId,input};
+    const prior=(await pool.query<{id:string}>(`select id from agent_runs where user_id=$1
+      and status in ('queued','running','stopping')`,[actors[index]])).rows;
+    assert.equal(positiveStep,null);positiveStep={index,exchangeId,input,excludedRunIds:new Set(prior.map(r=>r.id))};
     const auxiliary=await fetch(`http://127.0.0.1:${modelAddress.port}/v1/chat/completions`,{method:'POST',
       headers:{'Content-Type':'application/json',Authorization:`Bearer fixture-provider-${index}`},
       body:JSON.stringify({model:'fixture-model',messages:[{role:'user',content:`Generate a title for ${exchangeId}`}]}),
@@ -275,6 +287,7 @@ try {
   };
   const positiveFlow=await checkHermesPositive(commerce,secret,nativeStep,human,eventually,publicRequest);
   assert.equal(positiveCalls,positiveFlow.agentPreparations);
+  assert.equal(positiveRunIds.size,positiveCalls,'Scripted preparations must use distinct owner turns');
   for(const owner of [0,1]) {
     const privateCalls=calls.filter(c=>c.key===`Bearer fixture-provider-${owner}`);
     if(owner===1) assert(privateCalls.every(c=>!c.body.includes('937123')),'Buyer budget leaked to seller model');
