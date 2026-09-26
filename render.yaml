@@ -1,4 +1,6 @@
-# Review the paid service/disk before creating. Secrets are entered in Render.
+# NOT AUTHORIZED FOR DEPLOYMENT: the founder requires Render Free.
+# This historical persistent-host configuration is retained for reference only.
+# Do not apply it or merely remove its disk: ephemeral profile recovery is pending.
 services:
   - type: web
     name: tbd-two-founder-pilot

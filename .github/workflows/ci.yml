@@ -123,3 +123,26 @@ jobs:
           docker run --rm --network host \
             -e APT_LOCAL_DATABASE_URL=postgresql://postgres:fixture-only@127.0.0.1:55432/postgres \
             -e HERMES_CLI=/opt/tbd/hermes/bin/hermes tbd-render-check
+      # Diagnostic only: a pass is a memory feasibility result, not Render Free
+      # acceptance (CPU throttling, idle loss and cold bootstrap need more work).
+      - name: Render Free 512 MiB memory feasibility
+        id: free-memory
+        continue-on-error: true
+        run: |
+          docker run --name tbd-render-free-memory --network host \
+            --memory=512m --memory-swap=512m \
+            -e APT_LOCAL_DATABASE_URL=postgresql://postgres:fixture-only@127.0.0.1:55432/postgres \
+            -e HERMES_CLI=/opt/tbd/hermes/bin/hermes tbd-render-check
+      - name: Record free-tier diagnostic outcome
+        if: always() && steps.free-memory.outcome != 'skipped'
+        env:
+          DIAGNOSTIC_OUTCOME: ${{ steps.free-memory.outcome }}
+        run: |
+          docker inspect tbd-render-free-memory --format '{{json .State}}' > render-free-memory-state.json
+          echo "512 MiB diagnostic: $DIAGNOSTIC_OUTCOME. This does not establish free deployment readiness." >> "$GITHUB_STEP_SUMMARY"
+          docker rm -f tbd-render-free-memory
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.free-memory.outcome != 'skipped'
+        with:
+          name: render-free-memory-diagnostic
+          path: render-free-memory-state.json

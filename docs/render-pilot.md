@@ -1,5 +1,43 @@
 # Two-founder pilot on Render
 
+## Current decision: Render Free, with idle pauses
+
+The founder requires free hosting and accepts idle pauses. The paid service and
+disk below are a historical configuration, **not an approved deployment**.
+Do not apply `render.yaml` in its current form. No paid resources are authorized.
+
+Render Free stops after 15 minutes without inbound traffic and discards local
+files on spin-down, restart and redeploy. It cannot attach a persistent disk.
+The existing supervisor requires persisted Hermes profiles; simply changing the
+plan to `free` would lose their SQLite session-search state. Supabase already
+stores app conversations, private memory and commerce records, but that does not
+by itself make all Hermes-local state recoverable.
+
+Work required before replacing the Blueprint with a supported free deployment:
+
+- Restore both owner profiles and their searchable history after an empty local
+  filesystem, preserving the stable root identity secret and owner isolation.
+- Make acknowledged private-memory updates durable before accepting completion,
+  and verify recovery after both graceful shutdown and abrupt process loss.
+- Verify the real runtime fits 512 MiB, then test cold startup and model turns
+  under the Free CPU limit. Do not use synthetic keep-alive traffic to avoid idle
+  suspension; background work pauses and resumes on the next inbound wake.
+- Test pending approvals, A2A delivery, payment/shipping reconciliation, app
+  reconnect and provider webhook retries across the idle/restart boundary.
+
+CI records a separate `Render Free 512 MiB memory feasibility` diagnostic using
+the exact image, disposable PostgreSQL and synthetic model/providers. It has a
+hard 512 MiB memory limit with no swap, but does **not** impose Free CPU limits.
+Its test driver is in the same container. Its outcome and container exit state
+are recorded even on failure; ordinary green CI does not imply this diagnostic
+passed or that free hosting is supported. Full deployed acceptance remains open.
+
+Source: [Render Free limitations](https://render.com/docs/free), checked
+September 26, 2026. Free hosting does not provide model API credits or authorize
+real payments/postage. No switch to local-computer hosting was selected.
+
+## Historical persistent-host configuration
+
 Render replaces the manually operated Linux host; it does not replace the
 seller's shipping account. Use one paid Docker web service with one persistent
 disk. The API/worker and two isolated Hermes gateways share the disk-backed
