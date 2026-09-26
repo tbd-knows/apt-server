@@ -1,5 +1,8 @@
 # Persistent two-founder pilot host
 
+For managed hosting, use [the Render container deployment](render-pilot.md).
+The systemd instructions below remain the direct Linux-host option.
+
 This is the supported single-host deployment plan for TBD-12. One Linux host
 with systemd runs the API/commerce worker and two Hermes gateways as independent
 services. Phones connect over HTTPS and may disconnect without stopping payment

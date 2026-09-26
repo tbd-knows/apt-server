@@ -96,3 +96,30 @@ jobs:
         with:
           name: native-agent-commerce-evidence
           path: docs/hermes-a2a-results.json
+
+  render-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: fixture-only
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the combined Render runtime and native verification image
+        run: docker build --target verification -f deploy/render.Dockerfile -t tbd-render-check .
+      - name: Supervisor startup, private routing and child failure
+        run: |
+          docker run --rm --entrypoint /opt/tbd/node/bin/node -e APT_RENDER_CONTAINER_SMOKE=1 tbd-render-check scripts/render-supervisor-check.mjs
+      - name: Native commerce with the exact container Node/Python/Hermes runtime
+        run: |
+          docker run --rm --network host \
+            -e APT_LOCAL_DATABASE_URL=postgresql://postgres:fixture-only@127.0.0.1:55432/postgres \
+            -e HERMES_CLI=/opt/tbd/hermes/bin/hermes tbd-render-check

@@ -1,3 +1,4 @@
+import { isolatedProcessEnvironment } from '../process-environment.js';
 import { createHmac } from 'node:crypto';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { access, chmod, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
@@ -75,7 +76,7 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
 
   private async run(args: string[]) {
     await execFileAsync(this.config.cli, args, {
-      env: { ...process.env, HERMES_HOME: this.config.home }, timeout: 60_000,
+      env: { ...isolatedProcessEnvironment(), HERMES_HOME: this.config.home }, timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,
     });
   }
@@ -165,7 +166,7 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
     const key = hermesApiKey(profileName, this.config.keySecret);
     const child = spawn(this.config.cli, ['--profile', profileName, 'gateway', 'run', '--force', '--accept-hooks'], {
       env: {
-        ...process.env,
+        ...isolatedProcessEnvironment(),
         HERMES_HOME: this.config.home,
         API_SERVER_ENABLED: 'true',
         API_SERVER_HOST: '127.0.0.1',

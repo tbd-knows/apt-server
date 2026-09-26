@@ -3,3 +3,9 @@ dist
 .git
 .env
 coverage
+
+.env.*
+!.env.example
+.hermes
+.local
+__pycache__
