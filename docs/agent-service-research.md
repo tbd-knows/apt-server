@@ -600,12 +600,13 @@ The buyer reviews and explicitly shares it; the seller cannot share the buyer's
 draft and neither model can publish it directly. Sharing is idempotent and does
 not replace the paid outbound offer or create a provider operation.
 
-Both owners then see the selected return quote and the explicit `unselected`
-funding state. The payer choice remains unresolved; no default is inferred from
-the original seller reimbursement. Connected return purchase approvals are denied
-and no purchase binding is exposed while that lifecycle remains unfinished.
-Private account details stay outside model/mobile projections. Any private input,
-consent, account, resolution, revision or evidence expiry change blocks sharing.
+Both owners see explicit `seller_absorbed` return funding, delegated by the
+founder: the seller pays the additional return cost with no extra buyer charge.
+Both humans must approve the exact separate return terms before the worker can
+purchase once. The original sale remains unchanged. Private account details stay
+outside model/mobile projections. Input, consent, account, resolution, revision
+or evidence expiry changes block sharing. See [the connected return lifecycle](connected-returns.md)
+for purchase, private buyer artifacts, tracking, refund and unused-postage recovery.
 
 The real PostgreSQL/SDK return suite covers both UPS printed PDF and USPS retail
 printing-code options, private preparation, wrong-owner/tampered sharing, replay,

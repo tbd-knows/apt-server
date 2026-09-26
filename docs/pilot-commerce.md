@@ -436,8 +436,7 @@ carrier-handoff denial. Provider responses remain synthetic; this is not a live
 purchase or authenticated hosted-account compatibility claim.
 
 Connected returns deliberately cannot fall through to the old platform-funded
-return adapter. Implement the connected reverse-shipment and separately approved
-funding path before enabling those returns. USPS retail no-printer verification, FedEx/UPS printed-label verification, account
+return adapter. The separately approved [seller-paid connected return lifecycle](connected-returns.md) now handles reverse-shipment purchase and recovery. USPS retail no-printer verification, FedEx/UPS printed-label verification, account
 refresh/reconnect, unchanged paid-postage renewal and persistent-host configuration
 are implemented. The native positive fixture now joins agent preparation to
 synthetic provider fulfillment; live-model and deployed-host acceptance remain. Founder-controlled
@@ -467,8 +466,9 @@ seller's agent uses the existing typed validation/rate/carrier tools; the buyer'
 agent sees only approved public rate facts and performs its own postcode research
 and location check. Old outbound receipts cannot stand in for return evidence.
 Connected return-quote requests wake both agents instead of queuing legacy
-platform postage. Additional return-postage funding and purchase remain pending;
-no return payment or label is claimed by these preparation steps.
+platform postage. Preparation does not purchase postage. The subsequent
+[seller-paid return lifecycle](connected-returns.md) requires two exact human
+approvals and preserves the original payment until return delivery and receipt.
 
 The public drop-off adapter also supports UPS Ground at an observed official
 UPS Store page. It parses the public serialized profile without evaluating
@@ -529,3 +529,11 @@ agreed acceptance run.
 Sources: [USPS Label Broker](https://www.usps.com/business/label-broker.htm),
 [USPS Ground Advantage](https://www.usps.com/ship/ground-advantage.htm),
 [Shippo transaction QR field](https://docs.goshippo.com/shippoapi/public-api/transactions/createtransaction).
+
+### Seller-paid connected returns (September 26)
+
+The delegated funding choice is implemented: seller absorbs the exact return
+postage, with no additional buyer payment. See [connected returns](connected-returns.md)
+for approval, purchase, private artifacts, delivery/refund, cancellation, recovery
+and test evidence. The new operation-kind migration brings fresh replay to 13
+migrations; live rollout still requires applying the pilot migrations.

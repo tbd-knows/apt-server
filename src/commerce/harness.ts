@@ -34,10 +34,12 @@ export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, b
         || Date.parse(e.shippingData.expiresAt)<=now.getTime()
         || ![e.buyerId,e.sellerId].every(id=>e.shippingData!.approvedBy.includes(id))) missing.push('return_shipping_data_permission');
       if(!e.returnPlan.quote) missing.push('verified_return_shipping_option');
-      if(e.returnPlan.quote && e.offers.at(-1)?.connectedShipping) missing.push('return_postage_funding_decision');
+      if(e.returnPlan.quote && !e.returnPlan.approvals.includes(actor)) missing.push('owner_return_postage_approval');
     }
+    if(e.returnPlan.cancelApprovedBy?.length===1) missing.push(e.returnPlan.cancelApprovedBy.includes(actor)?'counterparty_return_cancellation_approval':'owner_return_cancellation_approval');
+    if(e.returnPlan.shipping==='cancelled') missing.push('new_remedy_after_cancelled_return');
     if(e.returnPlan.shipping==='label_pending') missing.push('provider_return_postage_confirmation');
-    if(e.returnPlan.shipping==='label_ready' && !e.returnPlan.droppedAt) missing.push(buyerRole?'owner_return_handoff':'buyer_return_handoff');
+    if(e.returnPlan.shipping==='label_ready' && !e.returnPlan.droppedAt && !e.returnPlan.cancelApprovedBy?.length) missing.push(buyerRole?'owner_return_handoff':'buyer_return_handoff');
     if(e.returnPlan.shipping==='in_transit') missing.push('return_carrier_delivery');
     if(e.returnPlan.shipping==='delivered' && !e.returnPlan.receivedAt) missing.push(buyerRole?'seller_return_receipt':'owner_return_receipt');
   }

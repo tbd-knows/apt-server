@@ -65,18 +65,18 @@ export class CommerceAssets {
     this.commerce.authorize(actor);
     const exchange = await this.commerce.repository.get(exchangeId, actor);
     requireRole(exchange, actor, returning ? 'buyer' : 'seller');
-    if (exchange.mode !== this.commerce.mode || (returning ? !exchange.returnPlan || !['label_ready','in_transit','delivered'].includes(exchange.returnPlan.shipping)
+    if (exchange.mode !== this.commerce.mode || (returning ? !exchange.returnPlan || !!exchange.returnPlan.cancelApprovedBy?.length || !['label_ready','in_transit','delivered'].includes(exchange.returnPlan.shipping)
       : exchange.payment !== 'paid' || exchange.cancellationRequested || !exchange.offers.length)) conflict('No usable paid label is available.');
     const quote = returning ? exchange.returnPlan?.quote : exchange.offers.at(-1)?.quote;
     if (!quote) conflict('No return quote is available.');
     const offer = exchange.offers.at(-1)!;
     if (offer.connectedShipping) {
-      if (returning || !this.connectedShipping) conflict('The connected shipping artifact is unavailable.');
+      if (!this.connectedShipping) conflict('The connected shipping artifact is unavailable.');
       const operation = (await this.commerce.repository.pool.query<{id:string;provider_id:string}>(
-        `select id,provider_id from pilot_operations where exchange_id=$1 and mode=$2 and kind='label'
-         and version=$3 and provider_id is not null`, [exchange.id,exchange.mode,offer.version])).rows[0];
+        `select id,provider_id from pilot_operations where exchange_id=$1 and mode=$2 and kind=$4
+         and version=$3 and provider_id is not null`, [exchange.id,exchange.mode,returning?exchange.returnPlan!.version:offer.version,returning?'return_label':'label'])).rows[0];
       if (!operation) conflict('The purchased shipping transaction has not been recorded.');
-      const transaction = await this.connectedShipping.transaction(exchange,offer,operation.id,operation.provider_id);
+      const transaction = await (returning?this.connectedShipping.forReturn():this.connectedShipping).transaction(exchange,offer,operation.id,operation.provider_id);
       if (transaction.state !== 'purchased') conflict('The service has not returned usable purchased postage.');
       return this.download(transaction.privateArtifactUrl,transaction.artifact);
     }

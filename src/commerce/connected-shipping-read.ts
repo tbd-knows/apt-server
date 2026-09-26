@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { CommerceService } from './service.js';
+import { requireConnectedReturn } from './connected-return.js';
 import { requireConnectedOffer } from './connected-offer.js';
 import { ConnectionSecrets } from './connection-secrets.js';
 import { conflict, digest, type Exchange, type Offer } from './domain.js';
@@ -24,8 +25,8 @@ interface Connection {
   credentials:string; inspection:{tools:ServiceInvocation['tool'][]};
 }
 
-export async function requireConnectedShippingLifecycle(commerce:CommerceService,sql:PoolClient,e:Exchange,offer:Offer) {
-  const shipping=await requireConnectedOffer(commerce,sql,e,offer);
+export async function requireConnectedShippingLifecycle(commerce:CommerceService,sql:PoolClient,e:Exchange,offer:Offer,returning=false) {
+  const shipping=await (returning?requireConnectedReturn:requireConnectedOffer)(commerce,sql,e,offer);
   const connection=(await sql.query<Connection>('select * from pilot_connections where id=$1',[shipping.connectionId])).rows[0]!;
   const rows=(await sql.query<ServiceActionRow>(`select * from pilot_service_actions where connection_id=$1
     and owner_id=$2 and exchange_id=$3 and mode=$4 and generation=$5 and state='returned'
@@ -48,13 +49,22 @@ export async function requireConnectedShippingLifecycle(commerce:CommerceService
  * the original generation and expiry still fence any future spending. */
 export class ConnectedShippingRead {
   private readonly secrets:ConnectionSecrets;
-  constructor(protected readonly commerce:CommerceService,rootSecret:string,private readonly execute=executeMcp) {
+  constructor(protected readonly commerce:CommerceService,protected readonly rootSecret:string,protected readonly execute=executeMcp,protected readonly returning=false) {
     this.secrets=new ConnectionSecrets(rootSecret);
+  }
+  forReturn():ConnectedShippingRead {return new ConnectedShippingRead(this.commerce,this.rootSecret,this.execute,true);}
+  protected quote(e:Exchange,offer:Offer) {
+    if(this.returning && !e.returnPlan?.quote) conflict('A return quote is required.');
+    return this.returning?e.returnPlan!.quote!:offer.quote;
+  }
+  protected version(e:Exchange,offer:Offer) {return this.returning?e.returnPlan!.version:offer.version;}
+  protected authorize(sql:PoolClient,e:Exchange,offer:Offer,purpose:'spend'|'reconcile') {
+    return this.returning?requireConnectedReturn(this.commerce,sql,e,offer,purpose):requireConnectedOffer(this.commerce,sql,e,offer,purpose);
   }
   async requireLifecycle(e:Exchange,offer:Offer) {
     await this.commerce.repository.transaction(async sql=>{
       const current=await this.commerce.repository.get(e.id,e.sellerId,sql,true);
-      await requireConnectedShippingLifecycle(this.commerce,sql,current,offer);
+      await requireConnectedShippingLifecycle(this.commerce,sql,current,offer,this.returning);
     });
   }
   protected async call(e:Exchange,offer:Offer,operation:ConnectedOperation,args:Record<string,unknown>,purpose:'spend'|'reconcile',
@@ -65,8 +75,9 @@ export class ConnectedShippingRead {
     const prepare=(claim=false)=>this.commerce.repository.transaction(async sql=>{
       const current=await this.commerce.repository.get(e.id,e.sellerId,sql,true);
       const actual=current.offers.find(o=>o.version===offer.version);
+      if(this.returning && (current.returnPlan?.version!==e.returnPlan?.version || digest(current.returnPlan?.quote)!==digest(e.returnPlan?.quote))) conflict('The return terms changed.');
       if(!actual || digest(actual)!==digest(offer)) conflict('The approved shipping offer changed.');
-      const shipping=await requireConnectedOffer(this.commerce,sql,current,actual,purpose);
+      const shipping=await this.authorize(sql,current,actual,purpose);
       const connection=(await sql.query<Connection>('select * from pilot_connections where id=$1',[shipping.connectionId])).rows[0]!;
       const descriptions=(await sql.query<ServiceActionRow>(`select * from pilot_service_actions where connection_id=$1
         and owner_id=$2 and exchange_id=$3 and mode=$4 and generation=$5 and state='returned'
@@ -107,13 +118,14 @@ export class ConnectedShippingRead {
     return {receipt,shipping:initial.shipping};
   }
   async preflight(e:Exchange,offer:Offer) {
-    const {receipt,shipping}=await this.call(e,offer,'GetRate',{RateId:offer.quote.rateId},'spend');
-    const rate=shippoRate(shippoPayload(receipt),{shipmentId:offer.quote.shipmentId,accountOwner:shipping.accountOwner,mode:'live'},new Date());
-    if(rate.rateId!==offer.quote.rateId || rate.carrierAccountId!==offer.quote.carrierAccountId
-      || rate.carrierName!==offer.quote.carrier || rate.serviceToken!==offer.quote.service
-      || rate.amount!==offer.quote.shippingAmount || rate.currency!==offer.quote.currency
-      || !rate.purchaseBefore || Date.parse(rate.purchaseBefore)<Date.parse(offer.expiresAt)
-      || (e.resolution?.remedy==='renew_postage' && Date.parse(rate.purchaseBefore)<Date.parse(e.resolution.expiresAt))) {
+    const quote=this.quote(e,offer);
+    const {receipt,shipping}=await this.call(e,offer,'GetRate',{RateId:quote.rateId},'spend');
+    const rate=shippoRate(shippoPayload(receipt),{shipmentId:quote.shipmentId,accountOwner:shipping.accountOwner,mode:'live'},new Date());
+    if(rate.rateId!==quote.rateId || rate.carrierAccountId!==quote.carrierAccountId
+      || rate.carrierName!==quote.carrier || rate.serviceToken!==quote.service
+      || rate.amount!==quote.shippingAmount || rate.currency!==quote.currency
+      || !rate.purchaseBefore || Date.parse(rate.purchaseBefore)<Date.parse(quote.expiresAt)
+      || (!this.returning && e.resolution?.remedy==='renew_postage' && Date.parse(rate.purchaseBefore)<Date.parse(e.resolution.expiresAt))) {
       conflict('The connected shipping rate changed. Prepare and approve a new offer.');
     }
     const carrier=await this.call(e,offer,'GetCarrierAccount',{CarrierAccountId:rate.carrierAccountId},'spend');
@@ -122,13 +134,14 @@ export class ConnectedShippingRead {
     return rate;
   }
   async transaction(e:Exchange,offer:Offer,operationId:string,transactionId:string) {
+    const quote=this.quote(e,offer),kind=this.returning?'return_label':'label';
     // IDs must come from this offer's persisted label operation, never a client.
     const saved=(await this.commerce.repository.pool.query(`select id from pilot_operations where id=$1 and exchange_id=$2
-      and mode=$3 and kind='label' and version=$4 and provider_id=$5`,[operationId,e.id,e.mode,offer.version,transactionId])).rows[0];
+      and mode=$3 and kind=$6 and version=$4 and provider_id=$5`,[operationId,e.id,e.mode,this.version(e,offer),transactionId,kind])).rows[0];
     if(!saved) conflict('The purchased shipping transaction has not been recorded.');
     const {receipt,shipping}=await this.call(e,offer,'GetTransaction',{TransactionId:transactionId},'reconcile');
-    const fact=shippoTransaction(receipt,{operationId,accountOwner:shipping.accountOwner,mode:'live',rateId:offer.quote.rateId,
-      parcelId:shipping.parcelId,artifact:offer.quote.artifact,qrRequested:shipping.qrRequested,carrierToken:shipping.carrierToken},transactionId);
+    const fact=shippoTransaction(receipt,{operationId,accountOwner:shipping.accountOwner,mode:'live',rateId:quote.rateId,
+      parcelId:shipping.parcelId,artifact:quote.artifact,qrRequested:shipping.qrRequested,carrierToken:shipping.carrierToken},transactionId);
     await this.commerce.repository.pool.query(`update pilot_operations set result=coalesce(result,'{}'::jsonb)||'{"referenceUnverified":false}'::jsonb
       where id=$1 and provider_id=$2 and result->>'referenceUnverified'='true'`,[operationId,transactionId]);
     return fact;
@@ -136,7 +149,8 @@ export class ConnectedShippingRead {
   async tracking(e:Exchange,offer:Offer,operationId:string,transactionId:string) {
     const transaction=await this.transaction(e,offer,operationId,transactionId);
     if(transaction.state!=='purchased') conflict('Tracking requires a verified purchased transaction.');
-    const bound=(await this.commerce.repository.privateInput(e,e.sellerId)).connectedShipping?.[String(offer.version)];
+    const bound=this.returning?(await this.commerce.repository.privateInput(e,e.buyerId)).connectedReturn?.shipping
+      :(await this.commerce.repository.privateInput(e,e.sellerId)).connectedShipping?.[String(offer.version)];
     if(!bound) conflict('The shipping authorization is missing.');
     const {receipt,shipping}=await this.call(e,offer,'GetTrack',{Carrier:bound.carrierToken,
       TrackingNumber:transaction.trackingNumber},'reconcile');
@@ -144,8 +158,8 @@ export class ConnectedShippingRead {
   }
   async refund(e:Exchange,offer:Offer,transactionId:string,refundId:string) {
     const saved=(await this.commerce.repository.pool.query(`select id from pilot_operations where exchange_id=$1 and mode=$2
-      and kind='label_refund' and version=$3 and provider_id=$4 and result->>'transactionId'=$5`,
-    [e.id,e.mode,offer.version,refundId,transactionId])).rows[0];
+      and kind=$6 and version=$3 and provider_id=$4 and result->>'transactionId'=$5`,
+    [e.id,e.mode,this.version(e,offer),refundId,transactionId,this.returning?'return_label_refund':'label_refund'])).rows[0];
     if(!saved) conflict('The postage refund has not been recorded.');
     const {receipt,shipping}=await this.call(e,offer,'GetRefund',{RefundId:refundId},'reconcile');
     const fact=shippoRefund(receipt,{transactionId,accountOwner:shipping.accountOwner,mode:'live'},refundId);

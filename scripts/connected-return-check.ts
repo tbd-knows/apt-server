@@ -1,4 +1,5 @@
 /** Real Postgres and MCP SDK; provider/location responses are synthetic. */
+import {checkConnectedReturnWorker} from './connected-return-worker-check.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -135,7 +136,7 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
     await assert.rejects(prepareConnectedReturn(service,B,randomUUID(),await input()),/other participant/);
     const turn={userId:A,runId:randomUUID(),requestMessageId:randomUUID()};
     const draft=await service.invoke(turn,await input()) as NonNullable<Awaited<ReturnType<typeof prepareConnectedReturn>>>;
-    assert.equal(draft.funding,'unselected');assert.equal(draft.quote.shippingAmount,915);
+    assert.equal(draft.funding,'seller_absorbed');assert.equal(draft.quote.shippingAmount,915);
     assert.equal(draft.quote.artifact,noPrinter?'label_qr':'pdf');
     assert.equal((await service.get(B,order.id)).connectedReturnDraft,null);
     assert.equal((await service.get(B,order.id)).returnPlan!.quote,null);
@@ -162,16 +163,17 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
     await service.command(A,order.id,key,beforeShare,share);await service.command(A,order.id,key,beforeShare,share);
     const shared=await service.get(B,order.id);
     assert.equal(shared.returnPlan!.version,1);assert.deepEqual(shared.returnPlan!.quote,draft.quote);
-    assert.equal(shared.returnPlan!.funding,'unselected');assert.deepEqual(shared.returnPlan!.approvals,[]);
-    assert.equal(shared.returnBinding,null);
+    assert.equal(shared.returnPlan!.funding,'seller_absorbed');assert.deepEqual(shared.returnPlan!.approvals,[]);
+    assert(shared.returnBinding);
     for(const actor of [A,B]) {
-      await assert.rejects(command(actor,{type:'approve_return',binding:{}}),/separate return postage funding/);
+      await assert.rejects(command(actor,{type:'approve_return',binding:{}}),/stale/);
       const model=JSON.stringify(await service.invoke({userId:actor,runId:randomUUID(),requestMessageId:randomUUID()},{action:'state',exchangeId:order.id}));
-      assert(model.includes('return_postage_funding_decision'));
+      assert(model.includes('owner_return_postage_approval'));
       for(const secret of ['PRIVATE_ACCOUNT_CANARY','PRIVATE_ADDRESS_CANARY',root]) assert(!model.includes(secret));
       assert(!JSON.stringify((await service.get(actor,order.id)).privateInput).includes('connectedReturn'));
     }
     assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[order.id])).rows[0].n,0);
+    await checkConnectedReturnWorker(service,await repository.get(order.id,A),root,tools,describe);
     // Changed private input invalidates a newly prepared draft before sharing.
     const next=await prepareConnectedReturn(service,A,randomUUID(),await input());assert(next);
     // An old outbound carrier receipt cannot become reverse-shipment evidence.
@@ -184,7 +186,7 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
     assert.deepEqual(await returnShippingOptions(service,A,order.id),[]);
     assert.equal(created,1);assert.equal(calls,4);
     assert.equal(digest((await repository.get(order.id,A)).offers.at(-1)),digest(offer),'Return planning cannot replace the paid sale');
-    process.stdout.write(`PASS: separate return consent, original account, reversed private SDK validation/rates, buyer packing/research/${noPrinter?'USPS retail QR':'UPS PDF'} drop-off, safe shared rate evidence, private exact quote preparation, buyer-only sharing, replay/privacy/input guards, no funding selection or spending, stale outbound rejection and input invalidation; synthetic providers only.\n`);
+    process.stdout.write(`PASS: separate return consent, original account, reversed private SDK validation/rates, buyer packing/research/${noPrinter?'USPS retail QR':'UPS PDF'} drop-off, safe shared rate evidence, private exact quote preparation, buyer-only sharing, replay/privacy/input guards, seller-absorbed funding and no spending before approval, stale outbound rejection and input invalidation; synthetic providers only.\n`);
   } finally {
     await pool.query('delete from pilot_operations where exchange_id=$1',[original.id]);
     await pool.query('insert into pilot_operations select * from jsonb_populate_recordset(null::pilot_operations,$1::jsonb)',[JSON.stringify(originalOperations)]);

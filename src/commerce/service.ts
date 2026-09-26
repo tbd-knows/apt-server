@@ -1,4 +1,4 @@
-import { connectedReturnSchema,connectedReturnDraftView,prepareConnectedReturn,shareConnectedReturn } from './connected-return.js';
+import { connectedReturnSchema,connectedReturnDraftView,requireConnectedReturn,prepareConnectedReturn,shareConnectedReturn } from './connected-return.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { AppError } from '../errors.js';
@@ -6,7 +6,7 @@ import type { RunContext } from '../memory/domain.js';
 import {
   approve, approvalFor, conflict, createExchange, currentOffer, digest, draftRequestSchema,
   exchangeView, humanCommandSchema, invalidate, itemSchema, mutable, requireRole,
-  reconciledStage, resolutionBinding, returnBinding, stableJson, type Exchange, type Mode, type Quote,
+  reconciledStage, resolutionBinding, returnBinding, returnCancellationBinding, stableJson, type Exchange, type Mode, type Quote,
   preparedCommandSchema, offerSettlement,
 } from './domain.js';
 import { CommerceRepository, emptyPrivateInput } from './repository.js';
@@ -49,11 +49,13 @@ export class CommerceService {
     const checkoutUrl = execution.rows[0]?.result?.checkoutUrl ?? null;
     const operations = (await this.repository.pool.query(`select id,kind,state,attempts,provider_id as "providerId",
       version,result->>'effectStarted' as "effectStarted",result->>'referenceUnverified' as "referenceUnverified",
-      case when kind='label_refund' then result->>'refundStatus' else null end as "labelRefundStatus"
+      case when kind in ('label_refund','return_label_refund') then result->>'refundStatus' else null end as "labelRefundStatus"
       from pilot_operations where exchange_id=$1 order by created_at`, [id])).rows.map(({version,effectStarted,referenceUnverified,...operation})=>({
-        ...operation,providerReferenceEditable:actor===e.sellerId && ['failed','uncertain'].includes(operation.state)
-          && ['label','label_refund'].includes(operation.kind) && effectStarted==='true'
-          && (!operation.providerId || referenceUnverified==='true') && !!e.offers.find(o=>o.version===version)?.connectedShipping,
+        ...operation,returnRequoteAvailable:operation.kind==='return_label' && version===e.returnPlan?.version
+          && ['failed','uncertain'].includes(operation.state) && !operation.providerId && effectStarted!=='true'
+          && e.returnPlan?.shipping==='label_pending' && !!e.offers.at(-1)?.connectedShipping,providerReferenceEditable:actor===e.sellerId && ['failed','uncertain'].includes(operation.state)
+          && ['label','label_refund','return_label','return_label_refund'].includes(operation.kind) && effectStarted==='true'
+          && (!operation.providerId || referenceUnverified==='true') && !!(operation.kind.startsWith('return_')?e.offers.at(-1):e.offers.find(o=>o.version===version))?.connectedShipping,
       }));
     const {verifiedDropoff:_internalDropoff,connectedShipping:_internalShipping,connectedOfferDraft,connectedReturnDraft,connectedReturn:_internalReturn,...privateInput}=await this.repository.privateInput(e,actor);
     const verifiedDropoff=await verifiedDropoffView(this,actor,id);
@@ -67,7 +69,7 @@ export class CommerceService {
       operations, deliveries: await this.deliveries(actor, id), research: await this.research.list(actor,id),connections:await listConnections(this,actor,id),serviceActions:await listServiceActions(this,actor,id),
       execution: { connectedShippingReady,
         checkoutUrl: actor === e.buyerId && e.payment === 'pending' && !e.cancellationRequested && checkoutUrl?.startsWith('https://checkout.stripe.com/') ? checkoutUrl : null,
-        returnLabelAvailable: actor === e.buyerId && !!e.returnPlan && ['label_ready','in_transit','delivered'].includes(e.returnPlan.shipping),
+        returnLabelAvailable: actor === e.buyerId && !!e.returnPlan && !e.returnPlan.cancelApprovedBy?.length && ['label_ready','in_transit','delivered'].includes(e.returnPlan.shipping),
         labelAvailable: actor === e.sellerId && e.payment === 'paid' && !e.cancellationRequested && ['label_ready','in_transit','delivered'].includes(e.shipping) } };
   }
   private async connectedReadiness(e:Exchange) {
@@ -314,7 +316,7 @@ export class CommerceService {
           const op = row.rows[0];
           if (!op || !['failed','uncertain'].includes(op.state)) conflict('Only an operation needing attention can be reconciled.');
           if (command.type === 'attach_provider_reference') {
-            const connected=['label','label_refund'].includes(op.kind) && e.offers.find(o=>o.version===op.version)?.connectedShipping;
+            const connected=['label','label_refund','return_label','return_label_refund'].includes(op.kind) && (op.kind.startsWith('return_')?e.offers.at(-1):e.offers.find(o=>o.version===op.version))?.connectedShipping;
             if(connected) {
               requireRole(e,actor,'seller');
               if(!op.result?.effectStarted || (op.provider_id && op.result?.referenceUnverified!==true)) conflict('Only an unknown postage operation can accept an unverified reference.');
@@ -333,7 +335,7 @@ export class CommerceService {
           break;
         }
         case 'propose_resolution':
-          if (e.returnPlan && e.returnPlan.shipping !== 'none') conflict('Reconcile the existing return before changing its resolution.');
+          if (e.returnPlan && !['none','cancelled'].includes(e.returnPlan.shipping)) conflict('Reconcile the existing return before changing its resolution.');
           if (!e.problem && !e.cancellationRequested && !Object.keys(e.operationIssues ?? {}).length) conflict('Report a problem before proposing a resolution.');
           if (!(command.remedy === 'absorb_postage' && e.payment === 'refunded') && !['paid','refund_failed'].includes(e.payment)) conflict('Reconcile payment before proposing a resolution.');
           e.resolution = { id: randomUUID(), remedy: command.remedy, reason: command.reason, offerDigest: digest(currentOffer(e)),
@@ -373,7 +375,7 @@ export class CommerceService {
             } else {
               if (!e.carrierAcceptedAt && !e.sellerDroppedAt) conflict('Use pre-shipment cancellation when the item has not been handed off.');
               e.cancellationRequested = true;
-              e.returnPlan = { resolutionId: proposal.id, version: 0, quote: null, subsidy: '', approvals: [], shipping: 'none',
+              e.returnPlan = { resolutionId: proposal.id, version: e.returnPlan?.version ?? 0, quote: null, subsidy: '', approvals: [], shipping: 'none',
                 droppedAt: null, carrierAcceptedAt: null, trackingUpdatedAt: null, receivedAt: null };
               e.problem = 'Return agreed. Prepare and approve a separate return shipping quote before buying return postage.';
             }
@@ -407,8 +409,60 @@ export class CommerceService {
             { inputHash: digest({ resolutionId: e.returnPlan.resolutionId, destination: destination.addressVersion, origin: data.addressVersion, packing: data.returnPackingVersion }) }]);
           break;
         }
+        case 'withdraw_return_cancellation': {
+          const plan=e.returnPlan;
+          if(!plan?.quote || plan.cancelApprovedBy?.length!==1 || !plan.cancelApprovedBy.includes(actor)
+            || stableJson(command.binding)!==stableJson(returnCancellationBinding(e,actor))) conflict('Only your unaccepted return cancellation can be withdrawn.');
+          const refund=await sql.query("select id from pilot_operations where exchange_id=$1 and kind='return_label_refund' and version=$2",[e.id,plan.version]);
+          if(refund.rowCount) conflict('Reconcile the submitted postage refund before using its label.');
+          plan.cancelApprovedBy=[];
+          await this.repository.message(sql,e,actor,other,'status',{action:'return_cancellation_withdrawn',text:'The unaccepted cancellation request was withdrawn. Existing return terms remain approved.'});
+          break;
+        }
+        case 'cancel_return': {
+          const plan=e.returnPlan;
+          if(!currentOffer(e).connectedShipping || !plan?.quote || plan.funding!=='seller_absorbed' || plan.shipping!=='label_ready'
+            || plan.droppedAt || plan.carrierAcceptedAt || stableJson(command.binding)!==stableJson(returnCancellationBinding(e,actor))) conflict('Only exact unused return postage can be cancelled.');
+          plan.cancelApprovedBy??=[];
+          if(plan.cancelApprovedBy.includes(actor)) conflict('You already approved this return cancellation.');
+          plan.cancelApprovedBy.push(actor);
+          if([e.buyerId,e.sellerId].every(id=>plan.cancelApprovedBy!.includes(id))) await this.repository.enqueue(sql,e,'return_label_refund',plan.version);
+          await this.repository.message(sql,e,actor,other,'status',{action:'return_cancellation',text:'Do not use the return postage. Both people must approve cancellation before its separate postage refund; the original Stripe payment is unchanged.'});
+          break;
+        }
+        case 'accept_return_postage_cost': {
+          requireRole(e,actor,'seller');const plan=e.returnPlan;
+          if(!plan?.quote || plan.funding!=='seller_absorbed' || stableJson(command.binding)!==stableJson(returnCancellationBinding(e,actor,'accept_return_postage_cost'))
+            || ![e.buyerId,e.sellerId].every(id=>plan.cancelApprovedBy?.includes(id)) || plan.droppedAt || plan.carrierAcceptedAt) conflict('Review the cancelled unused return first.');
+          const refund=(await sql.query("select * from pilot_operations where exchange_id=$1 and kind='return_label_refund' and version=$2 and result->>'refundStatus'='rejected' for update",[e.id,plan.version])).rows[0];
+          if(!refund) conflict('A canonical rejected return postage refund is required.');
+          await sql.query("update pilot_operations set state='succeeded',result=result||'{\"costAccepted\":true}'::jsonb where id=$1",[refund.id]);
+          const cancelled=await sql.query("update pilot_operations set result=coalesce(result,'{}'::jsonb)||'{\"returnCancelled\":true}'::jsonb where exchange_id=$1 and kind='return_label' and version=$2 returning id",[e.id,plan.version]);
+          for(const row of cancelled.rows) if(e.operationIssues) delete e.operationIssues[row.id];
+          if(e.operationIssues) delete e.operationIssues[refund.id];
+          plan.shipping='cancelled';e.problem='Return cancelled; seller accepted the rejected postage refund cost. Agree the next remedy for the original sale.';
+          break;
+        }
+        case 'refresh_return_quote': {
+          const plan=e.returnPlan;
+          if(!currentOffer(e).connectedShipping || !plan || plan.shipping!=='label_pending') conflict('Only an unpurchased connected return can be refreshed.');
+          const row=(await sql.query("select * from pilot_operations where exchange_id=$1 and mode=$2 and kind='return_label' and version=$3 for update",
+            [e.id,e.mode,plan.version])).rows[0];
+          if(!row || !['failed','uncertain'].includes(row.state) || row.provider_id || row.result?.effectStarted) conflict('Reconcile the original return purchase; possible spending cannot be replaced.');
+          await sql.query("update pilot_operations set state='succeeded',result=coalesce(result,'{}'::jsonb)||'{\"cancelledNoLabel\":true}'::jsonb where id=$1",[row.id]);
+          if(e.operationIssues) delete e.operationIssues[row.id];
+          plan.quote=null;plan.approvals=[];plan.shipping='none';
+          const input=await this.repository.privateInput(e,e.buyerId,sql);delete input.connectedReturn;delete input.connectedReturnDraft;
+          await this.repository.savePrivate(sql,e,e.buyerId,input);
+          for(const recipient of [e.buyerId,e.sellerId]) await this.repository.message(sql,e,actor,recipient,'status',
+            {action:'prepare_connected_return',text:'The unpurchased return was withdrawn. Prepare a fresh exact return option and collect both approvals again.'});
+          break;
+        }
         case 'approve_return': {
-          if(currentOffer(e).connectedShipping) conflict('Agree the separate return postage funding before approving a purchase. This option is not spending authority.');
+          if(currentOffer(e).connectedShipping) {
+            await requireConnectedReturn(this,sql,e,currentOffer(e));
+            await requireConnectedShippingLifecycle(this,sql,e,currentOffer(e),true);
+          }
           const plan = e.returnPlan;
           if (!plan?.quote || plan.shipping !== 'none' || e.resolution?.id !== plan.resolutionId || plan.approvals.includes(actor)
             || Date.parse(plan.quote.expiresAt) <= now.getTime() || stableJson(command.binding) !== stableJson(returnBinding(e, actor))) conflict('Return approval is stale, duplicated or does not match.');
@@ -418,7 +472,7 @@ export class CommerceService {
         }
         case 'return_dropped_off':
           requireRole(e, actor, 'buyer');
-          if (e.returnPlan?.shipping !== 'label_ready') conflict('A paid return label is required.');
+          if (e.returnPlan?.shipping !== 'label_ready' || e.returnPlan.cancelApprovedBy?.length) conflict('A paid return label is required.');
           e.returnPlan.droppedAt = now.toISOString();
           break;
         case 'return_received':

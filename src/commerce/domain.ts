@@ -90,7 +90,7 @@ export interface PrivateInput {
   verifiedDropoff?: import('./verified-dropoff.js').VerifiedDropoff;
   connectedOfferDraft?: import('./connected-offer.js').ConnectedOfferDraft;
   connectedReturnDraft?: import('./connected-return.js').ConnectedReturnDraft;
-  connectedReturn?: {version:number;resolutionId:string;shipping:import('./connected-offer.js').ConnectedShipping};
+  connectedReturn?: {version:number;resolutionId:string;termsDigest:string;shipping:import('./connected-offer.js').ConnectedShipping};
   connectedShipping?: Record<string,import('./connected-offer.js').ConnectedShipping>;
 }
 /** Preparations do not grant authority. The authenticated owner reviews the
@@ -117,9 +117,10 @@ export interface PreparedAction {
   explanation: string; expiresAt: string; digest: string;
 }
 export interface ReturnPlan {
-  funding?: 'unselected';
+  funding?: 'unselected' | 'seller_absorbed';
+  cancelApprovedBy?:string[];
   resolutionId: string; version: number; quote: Quote | null; subsidy: string; approvals: string[];
-  shipping: 'none' | 'label_pending' | 'label_ready' | 'in_transit' | 'delivered' | 'exception';
+  shipping: 'none' | 'label_pending' | 'label_ready' | 'in_transit' | 'delivered' | 'exception' | 'cancelled';
   droppedAt: string | null; carrierAcceptedAt: string | null; trackingUpdatedAt: string | null; receivedAt: string | null;
 }
 export type MessageKind = 'request' | 'seller_response' | 'decline' | 'question' | 'answer' | 'counteroffer' | 'offer' | 'status';
@@ -127,7 +128,7 @@ export interface AgentMessage {
   id: string; exchangeId: string; senderId: string; recipientId: string;
   kind: MessageKind; payload: unknown; createdAt: string; readAt: string | null;
 }
-export type OperationKind = 'quote' | 'checkout' | 'label' | 'refund' | 'cancel_checkout' | 'label_refund' | 'payout' | 'return_quote' | 'return_label';
+export type OperationKind = 'quote' | 'checkout' | 'label' | 'refund' | 'cancel_checkout' | 'label_refund' | 'payout' | 'return_quote' | 'return_label' | 'return_label_refund';
 export interface Operation {
   id: string; exchangeId: string; kind: OperationKind; version: number; mode: Mode;
   state: 'pending' | 'running' | 'uncertain' | 'succeeded' | 'failed';
@@ -229,7 +230,9 @@ export function exchangeView(exchange: Exchange, userId: string) {
     carrierAcceptedAt: exchange.carrierAcceptedAt, trackingUpdatedAt: exchange.trackingUpdatedAt,
     cancellationRequested: exchange.cancellationRequested, problem: exchange.problem ?? Object.values(exchange.operationIssues ?? {})[0] ?? null,
     resolution: exchange.resolution ?? null, resolutionBinding: exchange.resolution ? resolutionBinding(exchange, userId) : null,
-    returnPlan: exchange.returnPlan ?? null, returnBinding: exchange.returnPlan?.quote && !exchange.offers.at(-1)?.connectedShipping ? returnBinding(exchange, userId) : null,
+    returnPlan: exchange.returnPlan ?? null,
+    returnCostAcceptanceBinding:exchange.returnPlan?.quote && exchange.returnPlan.funding==='seller_absorbed'?returnCancellationBinding(exchange,userId,'accept_return_postage_cost'):null,
+    returnCancellationBinding: exchange.returnPlan?.quote && exchange.returnPlan.funding==='seller_absorbed'?returnCancellationBinding(exchange,userId):null, returnBinding: exchange.returnPlan?.quote && (!exchange.offers.at(-1)?.connectedShipping || exchange.returnPlan.funding==='seller_absorbed') ? returnBinding(exchange, userId) : null,
     createdAt: exchange.createdAt, updatedAt: exchange.updatedAt, expiresAt: exchange.expiresAt,
   };
 }
@@ -266,6 +269,10 @@ export const humanCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('approve_resolution'), binding: z.unknown() }).strict(),
   z.object({ type: z.literal('return_packing'), packing: packingSchema }).strict(),
   z.object({ type: z.literal('return_quote') }).strict(),
+  z.object({ type: z.literal('withdraw_return_cancellation'), binding:z.unknown() }).strict(),
+  z.object({ type: z.literal('cancel_return'), binding:z.unknown() }).strict(),
+  z.object({ type: z.literal('accept_return_postage_cost'), binding:z.unknown() }).strict(),
+  z.object({ type: z.literal('refresh_return_quote') }).strict(),
   z.object({ type: z.literal('approve_return'), binding: z.unknown() }).strict(),
   z.object({ type: z.literal('return_dropped_off') }).strict(),
   z.object({ type: z.literal('return_received') }).strict(),
@@ -287,8 +294,10 @@ export function returnBinding(e: Exchange, actor: string) {
     amount: plan.quote.shippingAmount, currency: 'USD', refundAfterReceipt: currentOffer(e).buyerTotal,
     service: `${plan.quote.carrier}/${plan.quote.service}`, expiresAt: plan.quote.expiresAt,
     originVersion: plan.quote.originVersion, destinationVersion: plan.quote.destinationVersion,
-    digest: digest({ quote: plan.quote, subsidy: plan.subsidy, offer: currentOffer(e) }) };
+    digest: digest({ quote: plan.quote, subsidy: plan.subsidy, funding:plan.funding, offer: currentOffer(e) }) };
 }
+
+export function returnCancellationBinding(e:Exchange,actor:string,operation:'cancel_return_postage'|'accept_return_postage_cost'='cancel_return_postage') {return {...returnBinding(e,actor),operation};}
 
 export function reconciledStage(e: Exchange) {
   if (e.problem || Object.keys(e.operationIssues ?? {}).length) { e.stage = 'needs_attention'; return; }

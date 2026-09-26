@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { PoolClient } from 'pg';
-import { conflict,currentOffer,digest,requireRole,type Exchange,type Quote } from './domain.js';
+import { conflict,currentOffer,digest,requireRole,type Exchange,type Quote,type Offer } from './domain.js';
 import type { CommerceService } from './service.js';
 import { requireReturnPlanning } from './shipping-consent.js';
 import { requireVerifiedDropoff } from './verified-dropoff.js';
@@ -16,7 +16,7 @@ export const connectedReturnSchema=z.object({action:z.literal('prepare_connected
   revision:z.number().int().positive(),dropoffId:z.uuid()}).strict();
 export function connectedReturnDraftView(draft:ConnectedReturnDraft|undefined,revision:number,now=new Date(),evidenceCurrent=true) {
   return draft?{id:draft.id,digest:draft.digest,revision:draft.revision,expiresAt:draft.expiresAt,
-    resolutionId:draft.resolutionId,version:draft.version,quote:draft.quote,funding:'unselected' as const,
+    resolutionId:draft.resolutionId,version:draft.version,quote:draft.quote,funding:'seller_absorbed' as const,
     state:evidenceCurrent && draft.revision===revision && Date.parse(draft.expiresAt)>now.getTime()?'review':'stale'}:null;
 }
 async function context(commerce:CommerceService,sql:PoolClient,e:Exchange,actor:string,dropoffId:string) {
@@ -25,13 +25,13 @@ async function context(commerce:CommerceService,sql:PoolClient,e:Exchange,actor:
   const checked=await requireVerifiedDropoff(commerce,sql,actor,e.id,e.revision,dropoffId);
   const source=ratedShippingSource(checked.rates);
   if(!checked.rate.purchaseBefore) conflict('Refresh the return rate to establish its purchase deadline.');
-  const previous=(await sql.query("select id from pilot_operations where exchange_id=$1 and kind in ('return_label','refund','label_refund')",[e.id])).rowCount;
+  const previous=(await sql.query("select id from pilot_operations where exchange_id=$1 and kind in ('return_label','refund','label_refund') and coalesce(result->>'cancelledNoLabel','false')<>'true' and coalesce(result->>'returnCancelled','false')<>'true'",[e.id])).rowCount;
   if(previous) conflict('Reconcile the existing purchase or refund before changing the return option.');
   const sourceBinding=digest({source:checked.binding,resolutionId:plan.resolutionId,offer: digest(offer),returnVersion:plan.version+1});
   return {...checked,plan,offer,source,sourceBinding};
 }
-/** A private, exact quote for the buyer who will hand off the return. Neither
- * preparation nor sharing selects a payer or grants purchase authority. */
+/** A private, exact quote for the buyer who will hand off the return. Preparation
+ * and sharing disclose seller funding but never grant purchase authority. */
 export async function prepareConnectedReturn(commerce:CommerceService,actor:string,turnId:string,raw:unknown) {
   commerce.authorize(actor);const input=connectedReturnSchema.parse(raw);
   return commerce.repository.transaction(async sql=>{
@@ -72,13 +72,41 @@ export async function shareConnectedReturn(commerce:CommerceService,sql:PoolClie
   if(checked.sourceBinding!==draft.shipping.sourceBinding || draft.offerDigest!==digest(checked.offer)
     || draft.resolutionId!==checked.plan.resolutionId || draft.version!==checked.plan.version+1) conflict('The return evidence changed. Prepare it again.');
   checked.plan.quote=draft.quote;checked.plan.version=draft.version;checked.plan.approvals=[];
-  checked.plan.subsidy='Return postage payer has not been selected. Sharing this option does not authorize postage, add a Stripe charge or change the original reimbursement.';
-  checked.plan.funding='unselected';
-  // Kept private for later separately approved funding/lifecycle work. The
+  checked.plan.subsidy='The seller pays and absorbs return postage through their connected shipping account. The buyer pays nothing extra. After carrier delivery and seller receipt, the original Stripe payment is refunded in full and the original seller transfer is reversed, including outbound postage reimbursement.';
+  checked.plan.funding='seller_absorbed';
+  // Private purchase evidence is separate from the shared quote. The
   // shared quote contains no account owner, credentials or signed artifact URL.
-  mine.connectedReturn={version:draft.version,resolutionId:draft.resolutionId,shipping:draft.shipping};
+  mine.connectedReturn={version:draft.version,resolutionId:draft.resolutionId,termsDigest:returnTerms(checked.plan),shipping:draft.shipping};
   delete mine.connectedReturnDraft;
   await commerce.repository.savePrivate(sql,e,actor,mine);
   for(const recipient of [e.buyerId,e.sellerId]) await commerce.repository.message(sql,e,actor,recipient,'offer',
-    {action:'return_option',version:draft.version,quote:draft.quote,funding:'unselected'});
+    {action:'return_option',version:draft.version,quote:draft.quote,funding:'seller_absorbed'});
+}
+
+/** Immutable private evidence binds the return quote separately from the paid sale. */
+export function returnTerms(plan:NonNullable<Exchange['returnPlan']>) {
+  return digest({version:plan.version,resolutionId:plan.resolutionId,quote:plan.quote,funding:plan.funding,subsidy:plan.subsidy});
+}
+export async function requireConnectedReturn(commerce:CommerceService,sql:PoolClient,e:Exchange,offer:Offer,purpose:'spend'|'reconcile'='spend') {
+  const buyer=await commerce.repository.privateInput(e,e.buyerId,sql),bound=buyer.connectedReturn,plan=e.returnPlan;
+  if(!bound || !plan?.quote || !offer.connectedShipping || plan.funding!=='seller_absorbed'
+    || bound.version!==plan.version || bound.resolutionId!==plan.resolutionId || bound.termsDigest!==returnTerms(plan)
+    || bound.shipping.offerDigest!==digest(offer) || digest(currentOffer(e))!==digest(offer) || e.mode!==commerce.mode
+    || e.resolution?.id!==plan.resolutionId || e.resolution.remedy!=='return' || e.resolution.offerDigest!==digest(offer)
+    || ![e.buyerId,e.sellerId].every(id=>e.resolution!.approvedBy.includes(id))) conflict('The connected return authorization changed.');
+  const original=(await commerce.repository.privateInput(e,e.sellerId,sql)).connectedShipping?.[String(offer.version)];
+  const shipping=bound.shipping;
+  if(!original || shipping.connectionId!==original.connectionId || shipping.endpoint!==original.endpoint || shipping.accountOwner!==original.accountOwner) conflict('Return postage requires the original seller service account.');
+  const connection=(await sql.query<{generation:string}>(`select generation from pilot_connections where id=$1 and owner_id=$2 and exchange_id=$3
+    and mode=$4 and endpoint=$5 and state='connected' and access_expires_at>now() for update`,
+    [shipping.connectionId,e.sellerId,e.id,e.mode,shipping.endpoint])).rows[0];
+  if(!connection) conflict('Reconnect the original seller shipping account to reconcile the return.');
+  if(purpose==='spend') {
+    const seller=await commerce.repository.privateInput(e,e.sellerId,sql);
+    if(connection.generation!==shipping.generation || Date.parse(plan.quote.expiresAt)<=Date.now()
+      || Date.parse(shipping.purchaseBefore)<=Date.now() || buyer.addressVersion!==plan.quote.originVersion
+      || seller.addressVersion!==plan.quote.destinationVersion || buyer.returnPackingVersion!==plan.quote.packingVersion
+      || e.payment!=='paid') conflict('Return postage authority expired or the account, payment or private shipping details changed.');
+  }
+  return shipping;
 }
