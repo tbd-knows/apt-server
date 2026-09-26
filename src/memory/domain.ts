@@ -65,5 +65,5 @@ export interface RunContext {
   requestMessageId: string;
 }
 
-export const MEMORY_TOOL_NAMES = ['apt_search_knowledge', 'apt_remember', 'apt_update_private_artifact'] as const;
+export const MEMORY_TOOL_NAMES = ['apt_search_knowledge', 'apt_remember', 'apt_update_private_artifact', 'apt_commerce'] as const;
 export type MemoryToolName = (typeof MEMORY_TOOL_NAMES)[number];

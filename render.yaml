@@ -1,0 +1,61 @@
+# NOT AUTHORIZED FOR DEPLOYMENT: the founder requires Render Free.
+# This historical persistent-host configuration is retained for reference only.
+# Do not apply it or merely remove its disk: ephemeral profile recovery is pending.
+services:
+  - type: web
+    name: tbd-two-founder-pilot
+    runtime: docker
+    dockerfilePath: ./deploy/render.Dockerfile
+    dockerContext: .
+    plan: standard
+    numInstances: 1
+    autoDeployTrigger: "off"
+    maxShutdownDelaySeconds: 60
+    healthCheckPath: /health
+    disk:
+      name: private-agent-state
+      mountPath: /var/lib/tbd
+      sizeGB: 10
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: APT_RENDER_PROVISION
+        value: "false"
+      - key: APT_COMMERCE_MODE
+        value: test
+      - key: APT_LIVE_COMMERCE_ENABLED
+        value: "false"
+      - key: SUPABASE_DATABASE_SSL
+        value: "true"
+      - key: APT_PILOT_USER_IDS
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_DATABASE_URL
+        sync: false
+      - key: HERMES_KEY_SECRET
+        sync: false
+      - key: HERMES_MODEL
+        sync: false
+      - key: HERMES_PROVIDER_API_KEY
+        sync: false
+      - key: APT_PUBLIC_URL
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PLATFORM_ACCOUNT_ID
+        sync: false
+      - key: STRIPE_CONNECTED_ACCOUNTS
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: APT_PILOT_TAX_MINOR
+        sync: false
+      - key: APT_PILOT_TAX_TREATMENT
+        sync: false
+      - key: APT_PILOT_FEE_SUBSIDY
+        sync: false

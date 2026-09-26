@@ -10,6 +10,17 @@ const configuredValue = z.string().min(1).refine(
   'Replace the local setup marker with the real secret or provider value.',
 );
 
+function isHttpOrigin(value: string) {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
+    && url.pathname === '/' && !url.search && !url.hash;
+}
+const a2aTemplate = z.string().default('http://hermes-{profile}:9900').refine(
+  value => value.includes('{profile}') && isHttpOrigin(value.replaceAll('{profile}', 'apt-aaaaaaaaaaaaaaaaaaaa')),
+  'A2A URLs must be HTTP(S) origins without credentials, paths or queries, including {profile}.',
+);
+
 const profileUrlMap = z.string().default('{}').transform((value, context) => {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -31,6 +42,15 @@ const configSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65_535).default(8787),
   LOG_LEVEL: z.string().default('info'),
   APT_ALLOWED_ORIGINS: z.string().default(''),
+  APT_INTERNAL_PEER_IPS: z.string().default('').transform(v => v.split(',').map(s => s.trim()).filter(Boolean))
+    .pipe(z.array(z.ipv4().refine(ip => {
+      const [a, b] = ip.split('.').map(Number);
+      return a === 10 || (a === 172 && b! >= 16 && b! <= 31) || (a === 192 && b === 168);
+    }, 'Internal peers must be explicit private IPv4 addresses.'))),
+  APT_PILOT_USER_IDS: z.string().transform(value => value.split(',').map(id => id.trim().toLowerCase()))
+    .pipe(z.array(z.uuid()).length(2).refine(ids => new Set(ids).size === 2, 'Two distinct founder UUIDs are required.')),
+  APT_COMMERCE_MODE: z.enum(['test', 'live']).default('test'),
+  APT_LIVE_COMMERCE_ENABLED: booleanFromString,
   SUPABASE_URL: z.url(),
   SUPABASE_PUBLISHABLE_KEY: z.string().min(20),
   SUPABASE_SERVICE_ROLE_KEY: configuredValue.pipe(z.string().min(20)),
@@ -41,6 +61,8 @@ const configSchema = z.object({
   HERMES_TOPOLOGY: z.enum(['shared', 'per_profile']).default('per_profile'),
   HERMES_PROFILE_URL_TEMPLATE: z.string().default('http://hermes-{profile}:8642'),
   HERMES_PROFILE_URL_MAP: profileUrlMap,
+  HERMES_A2A_PROFILE_URL_TEMPLATE: a2aTemplate,
+  HERMES_A2A_PROFILE_URL_MAP: profileUrlMap.refine(value => Object.values(value).every(isHttpOrigin), 'A2A URLs must be HTTP(S) origins without credentials, paths or queries.'),
   HERMES_KEY_SECRET: z.string().min(32),
   HERMES_HOME: z.string().default('/var/lib/hermes'),
   HERMES_CLI: z.string().default('hermes'),
@@ -51,6 +73,9 @@ const configSchema = z.object({
   HERMES_PROVIDER_API_KEY: configuredValue,
   APT_INTERNAL_URL: z.url().default('http://127.0.0.1:8787'),
 }).superRefine((value, context) => {
+  if (value.APT_COMMERCE_MODE === 'live' && !value.APT_LIVE_COMMERCE_ENABLED) {
+    context.addIssue({ code: 'custom', path: ['APT_LIVE_COMMERCE_ENABLED'], message: 'Live commerce must be explicitly enabled by the operator.' });
+  }
   if (value.HERMES_PROVIDER === 'custom' && !value.HERMES_PROVIDER_BASE_URL) {
     context.addIssue({
       code: 'custom',
@@ -70,6 +95,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     port: parsed.PORT,
     logLevel: parsed.LOG_LEVEL,
     allowedOrigins: parsed.APT_ALLOWED_ORIGINS.split(',').map((item) => item.trim()).filter(Boolean),
+    internalPeerIps: parsed.APT_INTERNAL_PEER_IPS,
+    pilotUserIds: parsed.APT_PILOT_USER_IDS,
+    commerceMode: parsed.APT_COMMERCE_MODE,
     supabase: {
       url: parsed.SUPABASE_URL,
       publishableKey: parsed.SUPABASE_PUBLISHABLE_KEY,
@@ -83,6 +111,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       topology: parsed.HERMES_TOPOLOGY,
       profileUrlTemplate: parsed.HERMES_PROFILE_URL_TEMPLATE,
       profileUrls: parsed.HERMES_PROFILE_URL_MAP,
+      a2aProfileUrlTemplate: parsed.HERMES_A2A_PROFILE_URL_TEMPLATE,
+      a2aProfileUrls: parsed.HERMES_A2A_PROFILE_URL_MAP,
+      pilotUserIds: parsed.APT_PILOT_USER_IDS,
       keySecret: parsed.HERMES_KEY_SECRET,
       home: parsed.HERMES_HOME,
       cli: parsed.HERMES_CLI,

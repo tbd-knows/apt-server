@@ -8,7 +8,7 @@ import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 import pg from 'pg';
 import { loadConfig } from '../src/config.js';
-import { lanAddress, profileUrlMap, requestedUserIds, upsertEnvironment } from '../src/local-stack.js';
+import { mobileApiUrl, profileUrlMap, requestedUserIds, upsertEnvironment } from '../src/local-stack.js';
 import { PostgresChatRepository } from '../src/repository.js';
 import { HermesCliProfileAdmin, ProvisioningService, SupabaseUserAdmin } from '../src/admin/service.js';
 
@@ -83,8 +83,9 @@ async function main() {
 
   const basePort = integerEnvironment('APT_LOCAL_HERMES_BASE_PORT', 8642);
   const routes = profileUrlMap(profiles, basePort);
+  const a2aRoutes = profileUrlMap(profiles, integerEnvironment('APT_LOCAL_A2A_BASE_PORT', 9900));
   const metroPort = 8081;
-  const requiredPorts = [...routes.map((route) => route.port), config.port, metroPort];
+  const requiredPorts = [...routes.map((route) => route.port), ...a2aRoutes.map(route => route.port), config.port, metroPort];
   if (new Set(requiredPorts).size !== requiredPorts.length) throw new Error('Hermes, Apt Server, and Metro ports must be distinct.');
   for (const port of requiredPorts) await requireAvailablePort(port);
 
@@ -101,6 +102,8 @@ async function main() {
           API_SERVER_ENABLED: 'true',
           API_SERVER_HOST: '127.0.0.1',
           API_SERVER_PORT: String(route.port),
+          A2A_HOST: '127.0.0.1',
+          A2A_PORT: String(a2aRoutes.find(peer => peer.profileName === route.profileName)!.port),
         },
       );
       await waitForHealth(route.url, gateway, 60_000);
@@ -120,12 +123,21 @@ async function main() {
         HERMES_CLI: hermesCli,
         HERMES_BASE_URL: routes[0]!.url,
         HERMES_PROFILE_URL_MAP: JSON.stringify(urlMap),
+        HERMES_A2A_PROFILE_URL_MAP: JSON.stringify(Object.fromEntries(a2aRoutes.map(route => [route.profileName, route.url]))),
       },
     );
     await waitForHealth(`http://127.0.0.1:${config.port}`, server, 30_000, true);
 
-    const address = lanAddress(networkInterfaces(), process.env.APT_LOCAL_LAN_IP);
-    const apiUrl = `http://${address}:${config.port}`;
+    const apiUrl = mobileApiUrl(networkInterfaces(), config.port, process.env.APT_MOBILE_API_URL, process.env.APT_LOCAL_LAN_IP);
+    if (process.env.APT_MOBILE_API_URL !== undefined) {
+      try {
+        const health = await fetch(`${apiUrl}/health`, { signal: AbortSignal.timeout(10_000), redirect: 'error' });
+        const body = await health.json() as { status?: string };
+        if (!health.ok || body.status !== 'ok') throw new Error('Unhealthy API');
+      } catch {
+        throw new Error('APT_MOBILE_API_URL is unreachable or unhealthy. Start the API tunnel/overlay and verify /health; Metro does not expose Fastify.');
+      }
+    }
     await writeMobileEnvironment(apiUrl, config.supabase.url, config.supabase.publishableKey);
     process.stdout.write(`\nApt Server is healthy. The iPhone will use ${apiUrl}.\n`);
     process.stdout.write('Building, installing, launching, and starting Metro...\n\n');

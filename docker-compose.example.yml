@@ -1,11 +1,19 @@
+# Illustrative topology only; not a complete deployment. The shared materializer
+# volume and Node MCP bridge are not wired across these containers. Use the
+# supported single-host plan in docs/persistent-pilot-host.md for the pilot.
 services:
   apt-server:
     build: .
     env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      APT_INTERNAL_PEER_IPS: 172.30.0.3,172.30.0.4
     ports:
       - "127.0.0.1:8787:8787"
     restart: unless-stopped
-    networks: [apt-private]
+    networks:
+      apt-private:
+        ipv4_address: 172.30.0.2
 
   # Copy this service once per manually provisioned beta profile. The value is
   # the opaque name printed by `npm run provision-user`; never use an email or
@@ -23,15 +31,23 @@ services:
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: 0.0.0.0
       API_SERVER_PORT: "8642"
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: "9900"
     volumes:
       - hermes-data:/var/lib/hermes
-    expose: ["8642"]
+    expose: ["8642", "9900"]
     restart: unless-stopped
-    networks: [apt-private]
+    networks:
+      apt-private:
+        ipv4_address: 172.30.0.3 # Use .4 for the second isolated profile.
 
 volumes:
   hermes-data:
 
 networks:
   apt-private:
-    internal: true
+    # Egress is needed for model/payment/shipping APIs. Only the server's
+    # loopback host port is published; Hermes has no published host port.
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

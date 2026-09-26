@@ -28,7 +28,7 @@ describe('manual provisioning lifecycle', () => {
       expect(DISABLED_HERMES_TOOLSETS).toContain(retired);
     }
     expect(REQUIRED_HERMES_TOOLSETS.some((toolset) => (DISABLED_HERMES_TOOLSETS as readonly string[]).includes(toolset))).toBe(false);
-    expect([...MEMORY_TOOL_NAMES]).toEqual(['apt_search_knowledge', 'apt_remember', 'apt_update_private_artifact']);
+    expect([...MEMORY_TOOL_NAMES]).toEqual(['apt_search_knowledge', 'apt_remember', 'apt_update_private_artifact', 'apt_commerce']);
     expect(LEGACY_BROWSER_POLICY_PLUGIN).toBe('apt-hunt-browser-policy');
     expect(LEGACY_PROFILE_SECRETS).toContain('AGENT_BROWSER_EXECUTABLE_PATH');
   });

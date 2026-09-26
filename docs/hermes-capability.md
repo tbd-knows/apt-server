@@ -22,7 +22,7 @@ Therefore production must set `HERMES_TOPOLOGY=per_profile`: one Hermes process/
 
 The pivot removed browser Hunts, shared skills, and the five shopping/commerce bridge tools. The harness now asserts, per profile and after restart:
 
-- exactly the three Apt bridge tools (`apt_search_knowledge`, `apt_remember`, `apt_update_private_artifact`) are discoverable through `hermes mcp test apt`, and none of the retired tools (`apt_propose_shared_change`, `apt_previous_hunts`, `apt_commerce_hunt`, `apt_get_shopping_state`, `apt_manage_shopping`) are;
+- exactly the four Apt bridge tools (`apt_search_knowledge`, `apt_remember`, `apt_update_private_artifact`, `apt_commerce`) are discoverable through `hermes mcp test apt`, and none of the retired tools (`apt_propose_shared_change`, `apt_previous_hunts`, `apt_commerce_hunt`, `apt_get_shopping_state`, `apt_manage_shopping`) are;
 - only the `memory` and `session_search` toolsets are enabled on the API server; `browser` and `skills` are disabled;
 - no `browser_*` tool, `web_search`, `skills_list`/`skill_view`/`skill_manage`, or dangerous tool reaches the model surface, while a retained `private.*` skill directory is still present on disk as inert data;
 - Hermes' constrained `tool_search`/`tool_describe`/`tool_call` discovery path is still present.
@@ -32,3 +32,10 @@ Browser-specific checks from Phase 0 (the observed-link resolver, the 45-second 
 Re-run `npm run test:hermes-capability` before any Hermes upgrade or topology change. [The JSON result](hermes-capability-results.json) is the machine-readable audit artifact; the harness uses no production model credentials or user data.
 
 The local Python runtime emitted Hermes' SQLite `3.51.2` WAL-reset warning and correctly fell back to `journal_mode=DELETE`. The pinned container uses Python `3.12`; operators should still re-run `hermes doctor` when the upstream image/runtime is refreshed.
+
+The commerce probe uses the actual Hermes `tool_call` → MCP → HTTP bridge path
+with a deterministic provider and owner-keyed file fixture. It prepares one
+request, ends the turn while waiting for the owner, denies the other profile's
+state, restarts the isolated processes, and reads a persisted simulated owner
+decision. This proves runtime tool/pause/resume support; real Postgres command
+authorization is tested separately, and live-model acceptance remains pending.

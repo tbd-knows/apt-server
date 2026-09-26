@@ -1,6 +1,7 @@
+import { isolatedProcessEnvironment } from '../process-environment.js';
 import { createHmac } from 'node:crypto';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
-import { access, chmod, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
@@ -8,6 +9,7 @@ import { promisify } from 'node:util';
 import { createClient } from '@supabase/supabase-js';
 import { hermesApiKey } from '../agent-runtime.js';
 import { aptBridgeToken } from '../memory/bridge-auth.js';
+import { a2aBridgeToken, a2aPeerToken } from '../commerce/a2a-auth.js';
 import { MEMORY_TOOL_NAMES } from '../memory/domain.js';
 import { removeLegacySharedSkills } from '../memory/legacy-cleanup.js';
 import type { AppConfig } from '../config.js';
@@ -74,7 +76,7 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
 
   private async run(args: string[]) {
     await execFileAsync(this.config.cli, args, {
-      env: { ...process.env, HERMES_HOME: this.config.home }, timeout: 60_000,
+      env: { ...isolatedProcessEnvironment(), HERMES_HOME: this.config.home }, timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,
     });
   }
@@ -88,6 +90,8 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
   }
 
   async configure(profileName: string) {
+    const peers = this.config.pilotUserIds.map(id => profileIdentity(id, this.config.keySecret).profileName).filter(p => p !== profileName);
+    if (peers.length !== 1) throw new Error('A2A provisioning requires one configured founder counterpart.');
     const profileArgs = ['--profile', profileName, 'config', 'set'];
     const bridgeSource = fileURLToPath(new URL('../memory/bridge-server.ts', import.meta.url));
     const bridgeCompiled = fileURLToPath(new URL('../memory/bridge-server.js', import.meta.url));
@@ -95,6 +99,11 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
     const tsxLoader = fileURLToPath(new URL('../../node_modules/tsx/dist/loader.mjs', import.meta.url));
     const bridgeArgs = bridgeEntry.endsWith('.ts') ? ['--import', tsxLoader, bridgeEntry] : [bridgeEntry];
     await this.removeLegacyRuntimeFiles(profileName);
+    const pluginDir = `${this.profileDir(profileName)}/plugins/tbd-commerce-a2a`;
+    await mkdir(pluginDir, { recursive: true, mode: 0o700 });
+    for (const name of ['plugin.yaml', '__init__.py', 'research.py']) {
+      await copyFile(fileURLToPath(new URL(`../../hermes-plugins/tbd-commerce-a2a/${name}`, import.meta.url)), `${pluginDir}/${name}`);
+    }
     const entries: [string, string][] = [
       ['model.default', this.config.model],
       ['model.provider', this.config.provider],
@@ -104,7 +113,9 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
       ['browser.backend', '"off"'],
       ['security.website_blocklist.enabled', 'true'],
       ['security.website_blocklist.domains', '["localhost","local","0.0.0.0","127.0.0.1","::1","metadata.google.internal"]'],
-      ['plugins.enabled', '[]'],
+      ['plugins.enabled', '["tbd-commerce-a2a"]'],
+      ['platforms.tbd_commerce.enabled', 'true'],
+      ['platforms.a2a.enabled', 'false'],
       ['memory.memory_enabled', 'true'],
       ['memory.user_profile_enabled', 'true'],
       ['memory.write_approval', 'false'],
@@ -137,6 +148,12 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
     await this.upsertSecret(profileName, 'API_SERVER_KEY', hermesApiKey(profileName, this.config.keySecret));
     await this.upsertSecret(profileName, 'APT_INTERNAL_URL', this.config.internalUrl);
     await this.upsertSecret(profileName, 'APT_BRIDGE_TOKEN', aptBridgeToken(profileName, this.config.keySecret));
+    await this.upsertSecret(profileName, 'APT_A2A_BRIDGE_TOKEN', a2aBridgeToken(profileName, this.config.keySecret));
+    await this.upsertSecret(profileName, 'A2A_PEER_TOKENS', `${peers[0]}:${a2aPeerToken(peers[0]!, profileName, this.config.keySecret)}`);
+    await this.upsertSecret(profileName, 'A2A_TRUSTED_PEERS', peers[0]!);
+    await this.upsertSecret(profileName, 'A2A_AGENT_NAME', profileName);
+    await this.removeSecret(profileName, 'A2A_BEARER_TOKEN');
+    await this.removeSecret(profileName, 'A2A_ALLOW_ALL_USERS');
     for (const key of LEGACY_PROFILE_SECRETS) await this.removeSecret(profileName, key);
     await this.run(['--profile', profileName, 'config', 'check']);
     await this.run(['--profile', profileName, 'mcp', 'test', 'apt']);
@@ -144,15 +161,18 @@ export class HermesCliProfileAdmin implements HermesProfileAdmin {
 
   async validate(profileName: string, sessionId: string) {
     const port = await reservePort();
+    const a2aPort = await reservePort();
     const baseUrl = `http://127.0.0.1:${port}`;
     const key = hermesApiKey(profileName, this.config.keySecret);
     const child = spawn(this.config.cli, ['--profile', profileName, 'gateway', 'run', '--force', '--accept-hooks'], {
       env: {
-        ...process.env,
+        ...isolatedProcessEnvironment(),
         HERMES_HOME: this.config.home,
         API_SERVER_ENABLED: 'true',
         API_SERVER_HOST: '127.0.0.1',
         API_SERVER_PORT: String(port),
+        A2A_PORT: String(a2aPort),
+        A2A_HOST: '127.0.0.1',
       },
       stdio: ['ignore', 'ignore', 'pipe'],
     });

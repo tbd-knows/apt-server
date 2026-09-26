@@ -1,6 +1,6 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -12,6 +12,8 @@ const hermes = process.env.HERMES_CLI ?? 'hermes';
 const version = process.env.HERMES_VERSION ?? 'v2026.8.19';
 let gatewayPort = 0;
 let providerPort = 0;
+let bridgePort = 0;
+const commerceCalls: string[] = [];
 const profiles = ['apt-capability-a', 'apt-capability-b'] as const;
 const profileKeys = {
   'apt-capability-a': 'api-a-0123456789abcdef0123456789abcdef0123456789abcdef',
@@ -28,15 +30,15 @@ let sharedMcpDiscovery = true;
 const bridgeEntry = join(process.cwd(), 'src', 'memory', 'bridge-server.ts');
 const tsxLoader = join(process.cwd(), 'node_modules', 'tsx', 'dist', 'loader.mjs');
 const aptTools = [...MEMORY_TOOL_NAMES];
-assert(aptTools.length === 3 && new Set(aptTools).size === 3, 'Apt bridge must expose exactly three unique tools.');
+assert(aptTools.length === 4 && new Set(aptTools).size === 4, 'Apt bridge must expose exactly four unique tools.');
 /** Bridge tools retired by the TBD pivot; none may be discoverable. */
 const retiredAptTools = ['apt_propose_shared_change', 'apt_previous_hunts', 'apt_commerce_hunt', 'apt_get_shopping_state', 'apt_manage_shopping'];
 /** Toolsets and tools that must be absent from the model surface. */
 const forbiddenToolsets = ['browser', 'skills'];
 const forbiddenTools = ['web_search', 'terminal', 'write_file', 'read_file', 'execute_code', 'delegate_task', 'cronjob', 'skills_list', 'skill_view', 'skill_manage', 'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_console'];
 
-function configYaml(multiplex: boolean, apiEnabled: boolean, port: number) {
-  return `model:\n  default: mock-model\n  provider: custom\n  base_url: http://127.0.0.1:${providerPort}/v1\n  api_key: \${MOCK_PROVIDER_KEY}\nplatform_toolsets:\n  api_server: [${REQUIRED_HERMES_TOOLSETS.join(', ')}]\nagent:\n  disabled_toolsets: [${DISABLED_HERMES_TOOLSETS.join(', ')}]\nbrowser:\n  backend: \"off\"\nsecurity:\n  website_blocklist:\n    enabled: true\n    domains: [localhost, local, 0.0.0.0, 127.0.0.1, \"::1\", metadata.google.internal]\nplugins:\n  enabled: []\nmemory:\n  memory_enabled: true\n  user_profile_enabled: true\n  write_approval: false\n  memory_char_limit: 2200\n  user_char_limit: 1375\n  nudge_interval: 0\nskills:\n  external_dirs: []\n  guard_agent_created: true\n  write_approval: true\n  creation_nudge_interval: 0\nauxiliary:\n  background_review:\n    enabled: false\nmcp_servers:\n  apt:\n    command: ${JSON.stringify(process.execPath)}\n    args: [\"--import\", ${JSON.stringify(tsxLoader)}, ${JSON.stringify(bridgeEntry)}]\n    env:\n      APT_INTERNAL_URL: \"http://127.0.0.1:9\"\n      APT_BRIDGE_TOKEN: \"apt-capability-token-0123456789abcdef\"\n    tools:\n      include: [${aptTools.join(', ')}]\n    connect_timeout: 15\n    enabled: true\ngateway:\n  multiplex_profiles: ${multiplex}\n  multiplex_profile_allowlist: [${profiles.join(', ')}]\nplatforms:\n  api_server:\n    enabled: ${apiEnabled}\n    host: 127.0.0.1\n    port: ${port}\n    max_concurrent_runs: 10\n`;
+function configYaml(multiplex: boolean, apiEnabled: boolean, port: number, profile = 'default') {
+  return `model:\n  default: mock-model\n  provider: custom\n  base_url: http://127.0.0.1:${providerPort}/v1\n  api_key: \${MOCK_PROVIDER_KEY}\nplatform_toolsets:\n  api_server: [${REQUIRED_HERMES_TOOLSETS.join(', ')}]\nagent:\n  disabled_toolsets: [${DISABLED_HERMES_TOOLSETS.join(', ')}]\nbrowser:\n  backend: \"off\"\nsecurity:\n  website_blocklist:\n    enabled: true\n    domains: [localhost, local, 0.0.0.0, 127.0.0.1, \"::1\", metadata.google.internal]\nplugins:\n  enabled: []\nmemory:\n  memory_enabled: true\n  user_profile_enabled: true\n  write_approval: false\n  memory_char_limit: 2200\n  user_char_limit: 1375\n  nudge_interval: 0\nskills:\n  external_dirs: []\n  guard_agent_created: true\n  write_approval: true\n  creation_nudge_interval: 0\nauxiliary:\n  background_review:\n    enabled: false\nmcp_servers:\n  apt:\n    command: ${JSON.stringify(process.execPath)}\n    args: [\"--import\", ${JSON.stringify(tsxLoader)}, ${JSON.stringify(bridgeEntry)}]\n    env:\n      APT_INTERNAL_URL: \"http://127.0.0.1:${bridgePort}\"\n      APT_BRIDGE_TOKEN: \"apt-capability-token-${profile}-0123456789abcdef\"\n    tools:\n      include: [${aptTools.join(', ')}]\n    connect_timeout: 15\n    enabled: true\ngateway:\n  multiplex_profiles: ${multiplex}\n  multiplex_profile_allowlist: [${profiles.join(', ')}]\nplatforms:\n  api_server:\n    enabled: ${apiEnabled}\n    host: 127.0.0.1\n    port: ${port}\n    max_concurrent_runs: 10\n`;
 }
 
 async function writeProfile(home: string, profile: typeof profiles[number]) {
@@ -45,7 +47,7 @@ async function writeProfile(home: string, profile: typeof profiles[number]) {
   // A retained historical private skill stays on disk as inert data; the
   // harness verifies it never becomes a tool path.
   await mkdir(join(directory, 'skills', 'private.capability'), { recursive: true });
-  await writeFile(join(directory, 'config.yaml'), configYaml(false, false, gatewayPort), 'utf8');
+  await writeFile(join(directory, 'config.yaml'), configYaml(false, false, gatewayPort, profile), 'utf8');
   await writeFile(join(directory, '.env'), `API_SERVER_KEY=${profileKeys[profile]}\nMOCK_PROVIDER_KEY=${providerKeys[profile]}\n`, { mode: 0o600 });
   await writeFile(join(directory, 'SOUL.md'), `Private Soul probe for ${profile}.\n`, 'utf8');
   await writeFile(join(directory, 'memories', 'USER.md'), `USER hot-cache probe for ${profile}.\n`, 'utf8');
@@ -70,15 +72,22 @@ function providerServer() {
     if (providerTools[providerKey]) providerTools[providerKey].push(...(body.tools ?? []).map((tool) => tool.function?.name ?? '').filter(Boolean));
     const latest = [...(body.messages ?? [])].reverse().find((item) => item.role === 'user')?.content ?? '';
     if (latest.includes('SLOW')) await new Promise((resolve) => setTimeout(resolve, 3_000));
-    const output = `mock:${latest}`;
+    const toolsAfterUser = (body.messages ?? []).slice((body.messages ?? []).findLastIndex(m => m.role === 'user') + 1).filter(m => m.role === 'tool');
+    const commerceProbe = latest.startsWith('COMMERCE_');
+    const call = commerceProbe && !toolsAfterUser.length ? { id: 'call_commerce_fixture', type: 'function', function: { name: 'tool_call', arguments: JSON.stringify({
+      name: 'mcp__apt__apt_commerce', arguments: latest.startsWith('COMMERCE_PREPARE') ? { action: 'draft_request', input: {
+        request: { item: 'Fixture shoes', style: 'Low', size: '10', sizingSystem: 'US men', condition: 'Used' }, privateBudget: 7000,
+      } } : { action: 'state' },
+    }) } } : null;
+    const output = commerceProbe && toolsAfterUser.length ? `commerce-paused:${toolsAfterUser.at(-1)!.content}` : `mock:${latest}`;
     if (body.stream) {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
-      response.write(`data: ${JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', content: output }, finish_reason: null }] })}\n\n`);
-      response.write(`data: ${JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: call ? { role: 'assistant', tool_calls: [{ index: 0, ...call }] } : { role: 'assistant', content: output }, finish_reason: null }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: call ? 'tool_calls' : 'stop' }] })}\n\n`);
       response.end('data: [DONE]\n\n');
     } else {
       response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion', created: 0, model: 'mock-model', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: output } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+      response.end(JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion', created: 0, model: 'mock-model', choices: [{ index: 0, finish_reason: call ? 'tool_calls' : 'stop', message: call ? { role: 'assistant', content: null, tool_calls: [call] } : { role: 'assistant', content: output } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
     }
   });
 }
@@ -163,12 +172,36 @@ async function reservePort() {
 
 const home = await mkdtemp(join(tmpdir(), 'apt-hermes-capability-'));
 const provider = providerServer();
+// File-backed deterministic bridge fixture. The real Postgres command/approval
+// contract is exercised separately by commerce-db-check and commerce-worker-check.
+const bridge = createServer(async (request, response) => {
+  const profile = profiles.find(p => request.headers.authorization === `Bearer apt-capability-token-${p}-0123456789abcdef`);
+  if (!profile || request.url !== '/internal/agent/tool') { response.writeHead(401); response.end(); return; }
+  try {
+    let raw = ''; for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    assert(body.tool === 'apt_commerce', 'Unexpected fixture bridge tool');
+    const file = join(home, `${profile}-commerce.json`);
+    let state: { status: string; owner: string } = { status: 'empty', owner: profile };
+    try { state = JSON.parse(await readFile(file, 'utf8')); } catch { /* first run */ }
+    if (body.arguments.action === 'draft_request') {
+      assert(body.arguments.input.request.sizingSystem === 'US men', 'Typed commerce input was lost');
+      state = { status: 'waiting_for_owner', owner: profile };
+      await writeFile(file, JSON.stringify(state), { mode: 0o600 });
+    } else assert(body.arguments.action === 'state', 'Unapproved fixture action');
+    commerceCalls.push(`${profile}:${body.arguments.action}`);
+    response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(state));
+  } catch { response.writeHead(400); response.end('{}'); }
+});
 let gateways: ChildProcess[] = [];
 try {
   await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
   const providerAddress = provider.address();
   if (!providerAddress || typeof providerAddress === 'string') throw new Error('Mock provider did not bind a TCP port.');
   providerPort = providerAddress.port;
+  await new Promise<void>(resolve => bridge.listen(0, '127.0.0.1', resolve));
+  const address = bridge.address(); if (!address || typeof address === 'string') throw new Error('Bridge did not bind');
+  bridgePort = address.port;
   gatewayPort = await reservePort();
   for (const profile of profiles) {
     await execFileAsync(hermes, ['profile', 'create', profile, '--no-alias', '--no-skills'], { env: { ...process.env, HERMES_HOME: home }, timeout: 60_000 });
@@ -180,7 +213,7 @@ try {
     const discoveredAptTools = [...new Set(mcpProbe.stdout.match(/apt_[a-z_]+/g) ?? [])].sort();
     assert(
       discoveredAptTools.length === aptTools.length && aptTools.every((tool) => discoveredAptTools.includes(tool)),
-      `${profile} MCP discovery did not expose exactly the three approved Apt tools: ${discoveredAptTools.join(', ')}.`,
+      `${profile} MCP discovery did not expose exactly the four approved Apt tools: ${discoveredAptTools.join(', ')}.`,
     );
     for (const retired of retiredAptTools) assert(!discoveredAptTools.includes(retired), `${profile} MCP discovery exposed retired tool ${retired}.`);
   }
@@ -226,7 +259,7 @@ try {
   for (let index = 0; index < profiles.length; index += 1) {
     const profile = profiles[index]!;
     const port = isolatedPorts[index]!;
-    await writeFile(join(home, 'profiles', profile, 'config.yaml'), configYaml(false, true, port), 'utf8');
+    await writeFile(join(home, 'profiles', profile, 'config.yaml'), configYaml(false, true, port, profile), 'utf8');
     activeUrls[profile] = `http://127.0.0.1:${port}`;
   }
   gateways = await Promise.all(profiles.map((profile, index) => startGateway(home, isolatedPorts[index]!, profile)));
@@ -264,6 +297,12 @@ try {
   const fallbackSessionsB = await (await api(profiles[1], '/api/sessions')).text();
   assert(!fallbackSessionsA.includes('fallback-beta') && !fallbackSessionsB.includes('fallback-alpha'), 'Fallback session history leaked across profiles.');
 
+  const prepared = await waitForRun(profiles[0], await submit(profiles[0], 'COMMERCE_PREPARE', 'ffffffff-ffff-4fff-8fff-ffffffffffff'));
+  assert(prepared.status === 'completed' && prepared.output?.includes('waiting_for_owner'), `Commerce tool did not pause for owner: ${JSON.stringify(prepared)}`);
+  assert(commerceCalls.filter(c => c === `${profiles[0]}:draft_request`).length === 1, 'Commerce preparation looped');
+  const otherState = await waitForRun(profiles[1], await submit(profiles[1], 'COMMERCE_STATE', 'ffffffff-ffff-4fff-8fff-ffffffffffff'));
+  assert(otherState.output?.includes('empty') && !otherState.output?.includes('waiting_for_owner'), 'Commerce fixture crossed owner profiles');
+
   const slowRun = await submit(profiles[0], 'SLOW fallback stop', 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
   await new Promise((resolve) => setTimeout(resolve, 150));
   const stopResponse = await api(profiles[0], `/v1/runs/${slowRun}/stop`, { method: 'POST' });
@@ -275,13 +314,18 @@ try {
   const restartPorts = await Promise.all(profiles.map(() => reservePort()));
   for (let index = 0; index < profiles.length; index += 1) {
     const profile = profiles[index]!;
-    await writeFile(join(home, 'profiles', profile, 'config.yaml'), configYaml(false, true, restartPorts[index]!), 'utf8');
+    await writeFile(join(home, 'profiles', profile, 'config.yaml'), configYaml(false, true, restartPorts[index]!, profile), 'utf8');
     activeUrls[profile] = `http://127.0.0.1:${restartPorts[index]!}`;
   }
   gateways = await Promise.all(profiles.map((profile, index) => startGateway(home, restartPorts[index]!, profile)));
   const restartedA = await (await api(profiles[0], '/api/sessions')).text();
   const restartedB = await (await api(profiles[1], '/api/sessions')).text();
   assert(!restartedA.includes('fallback-beta') && !restartedB.includes('fallback-alpha'), 'Fallback restart introduced cross-profile session leakage.');
+
+  // Simulate the human action between isolated Hermes process lifetimes.
+  await writeFile(join(home, `${profiles[0]}-commerce.json`), JSON.stringify({ status: 'owner_approved', owner: profiles[0] }), { mode: 0o600 });
+  const resumed = await waitForRun(profiles[0], await submit(profiles[0], 'COMMERCE_RESUME', '99999999-9999-4999-8999-999999999999'));
+  assert(resumed.status === 'completed' && resumed.output?.includes('owner_approved'), `Commerce did not resume durable owner state: ${JSON.stringify(resumed)}`);
 
   const report = {
     hermesVersion: version,
@@ -292,12 +336,14 @@ try {
     aptBridgeDiscovery: 'pass', aptBridgeTools: aptTools, retiredBridgeToolsAbsent: 'pass',
     browserToolsetDisabled: 'pass', skillsToolsetDisabled: 'pass', apiBackedWebSearchDisabled: 'pass',
     dangerousToolsDisabled: 'pass', arbitraryMcpDisabled: 'pass',
+    commerceToolInvocation: 'pass (mock provider, file-backed bridge fixture)', commercePauseResumeAfterRestart: 'pass',
     typedBridgeBoundary: 'covered-by-server-tests', stop: 'pass', testedAt: new Date().toISOString(),
   };
   await writeFile('docs/hermes-capability-results.json', `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 } finally {
   await Promise.all(gateways.map(stopGateway));
+  await new Promise<void>((resolve) => bridge.close(() => resolve()));
   await new Promise<void>((resolve) => provider.close(() => resolve()));
   if (!process.env.KEEP_HERMES_CAPABILITY_HOME) await rm(home, { recursive: true, force: true });
   else process.stdout.write(`Preserved test home: ${home}\n`);

@@ -2,7 +2,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, wri
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HermesCliProfileAdmin } from '../src/admin/service.js';
+import { HermesCliProfileAdmin, profileIdentity } from '../src/admin/service.js';
 import type { RuntimePrivateArtifacts } from '../src/memory/domain.js';
 import { removeLegacySharedSkills, LEGACY_SHARED_SKILLS_DIRECTORY } from '../src/memory/legacy-cleanup.js';
 import { LEGACY_CLAW_MARKER_FILE, LEGACY_MEMORY_BACKUP_FILE, MEMORY_MARKER_FILE, MemoryMaterializer } from '../src/memory/materializer.js';
@@ -11,7 +11,7 @@ import { MemoryAgentRuntime } from '../src/memory/runtime.js';
 import { MemoryService } from '../src/memory/service.js';
 import { config, instance, runtime, USER_A, USER_B, RUN_ID, REQUEST_ID } from './fixtures.js';
 
-const owned = { ...instance, hermesProfileName: 'apt-aaaaaaaaaaaaaaaaaaaa' };
+const owned = { ...instance, hermesProfileName: profileIdentity(USER_A, config.hermes.keySecret).profileName };
 const context = { userId: USER_A, runId: RUN_ID, requestMessageId: REQUEST_ID };
 const original = { soulText: 'A private soul', hotUserText: 'A private user', hotMemoryText: 'A unreconciled memory' };
 const homes: string[] = [];

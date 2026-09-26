@@ -13,6 +13,7 @@ export const REQUEST_ID = '44444444-4444-4444-8444-444444444444';
 export const RESPONSE_ID = '55555555-5555-4555-8555-555555555555';
 
 export const config = loadConfig({
+  APT_PILOT_USER_IDS: '11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222',
   NODE_ENV: 'test', LOG_LEVEL: 'silent', SUPABASE_URL: 'https://example.supabase.co',
   SUPABASE_PUBLISHABLE_KEY: 'publishable-key-for-tests', SUPABASE_SERVICE_ROLE_KEY: 'service-role-key-for-tests',
   SUPABASE_DATABASE_URL: 'postgresql://example', HERMES_KEY_SECRET: 'x'.repeat(32),

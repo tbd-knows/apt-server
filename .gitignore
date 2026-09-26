@@ -9,3 +9,6 @@ __pycache__/
 supabase/.temp/
 .hermes/
 .local/
+
+.env.*
+!.env.example

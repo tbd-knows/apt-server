@@ -48,7 +48,7 @@ class RunChannel {
 export class RunManager {
   private readonly channels = new Map<string, RunChannel>();
   private readonly tasks = new Map<string, Promise<void>>();
-  private readonly activeContexts = new Map<string, { instance: AgentInstance; context: RunContext }>();
+  private readonly activeContexts = new Map<string, { instance: AgentInstance; context: RunContext; toolSteps: number }>();
 
   constructor(
     private readonly repository: ChatRepository,
@@ -65,14 +65,14 @@ export class RunManager {
       runId: turn.run.id,
       requestMessageId: turn.requestMessage.id,
     };
-    this.activeContexts.set(instance.hermesProfileName, { instance, context });
+    this.activeContexts.set(instance.hermesProfileName, { instance, context, toolSteps: 0 });
     const task = this.execute(userId, instance, turn, channel, context)
       .catch((error: unknown) => {
         this.logger.error({ error, runId: turn.run.id, userId }, 'Run execution crashed');
       })
       .finally(() => {
         this.tasks.delete(turn.run.id);
-        this.activeContexts.delete(instance.hermesProfileName);
+        if (this.activeContexts.get(instance.hermesProfileName)?.context.runId === turn.run.id) this.activeContexts.delete(instance.hermesProfileName);
       });
     this.tasks.set(turn.run.id, task);
   }
@@ -80,6 +80,15 @@ export class RunManager {
   private async execute(userId: string, instance: AgentInstance, turn: CreatedTurn, channel: RunChannel, context: RunContext) {
     let accumulated = '';
     let lastPersistedAt = 0;
+    let reconciled = false;
+    const reconcile = async () => {
+      if (reconciled) return;
+      reconciled = true;
+      if (this.activeContexts.get(instance.hermesProfileName)?.context.runId === turn.run.id) this.activeContexts.delete(instance.hermesProfileName);
+      try { await this.runtime.reconcile?.(instance, context); } catch (error) {
+        this.logger.error({ error, runId: turn.run.id, userId }, 'Private memory reconciliation failed');
+      }
+    };
     try {
       const submitted = await this.runtime.submit(instance, turn.requestMessage.content, { context });
       const current = await this.repository.getRun(userId, turn.run.id);
@@ -105,14 +114,17 @@ export class RunManager {
             lastPersistedAt = now;
           }
         } else if (event.type === 'completed') {
+          await reconcile();
           const run = await this.repository.completeRun(userId, turn.run.id, event.output || accumulated);
           channel.publish({ type: 'run.completed', run });
           return;
         } else if (event.type === 'cancelled') {
+          await reconcile();
           const run = await this.repository.cancelRun(userId, turn.run.id, accumulated);
           channel.publish({ type: 'run.cancelled', run });
           return;
         } else if (event.type === 'failed') {
+          await reconcile();
           const run = await this.repository.failRun(userId, turn.run.id, 'UPSTREAM_FAILED');
           channel.publish({ type: 'run.failed', run });
           return;
@@ -120,6 +132,7 @@ export class RunManager {
       }
 
       const state = await this.runtime.getState(instance, submitted.runId);
+      await reconcile();
       if (state.status === 'completed') {
         const run = await this.repository.completeRun(userId, turn.run.id, state.output ?? accumulated);
         channel.publish({ type: 'run.completed', run });
@@ -132,12 +145,11 @@ export class RunManager {
       }
     } catch (error) {
       this.logger.error({ error, runId: turn.run.id, userId }, 'Hermes run failed');
+      await reconcile();
       const run = await this.repository.failRun(userId, turn.run.id, 'UPSTREAM_FAILED');
       channel.publish({ type: 'run.failed', run });
     } finally {
-      try { await this.runtime.reconcile?.(instance, context); } catch (error) {
-        this.logger.error({ error, runId: turn.run.id, userId }, 'Private memory reconciliation failed');
-      }
+      await reconcile();
     }
   }
 
@@ -145,6 +157,7 @@ export class RunManager {
     if (!this.memoryService) throw new AppError('UPSTREAM_FAILED', 'The agent tool bridge is not configured.');
     const active = this.activeContexts.get(profileName);
     if (!active) throw new AppError('RUN_NOT_FOUND', 'No active run is bound to this agent profile.');
+    if (++active.toolSteps > 24) throw new AppError('COMMERCE_CONFLICT', 'Tool limit reached. Pause and ask your owner.');
     return this.memoryService.invoke(active.context, tool, argumentsValue);
   }
 

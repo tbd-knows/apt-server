@@ -1,0 +1,7 @@
+[Unit]
+Description=TBD two-founder agent commerce pilot
+Wants=network-online.target tbd-server.service tbd-hermes@founder1.service tbd-hermes@founder2.service
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target
