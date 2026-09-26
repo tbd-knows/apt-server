@@ -63,8 +63,8 @@ async function port() {
   const address = server.address(); assert(address && typeof address !== 'string');
   await new Promise<void>(resolve => server.close(() => resolve())); return address.port;
 }
-async function eventually(check: () => Promise<boolean>, label: string) {
-  for (let n = 0; n < 160; n++) { if (await check()) return; await pause(250); }
+async function eventually(check: () => Promise<boolean>, label: string, maxWaitMs=40_000) {
+  for (let n = 0; n < Math.ceil(maxWaitMs/250); n++) { if (await check()) return; await pause(250); }
   throw new Error(`${label} timed out. ${diagnostics.join('\n').slice(-3000)}`);
 }
 async function stop(child: ChildProcess) {
@@ -150,9 +150,10 @@ async function publicRequest<T=Awaited<ReturnType<CommerceService['get']>>>(inde
   const response=await fetch(`http://127.0.0.1:${bridgePort}${path}`,{method:payload?'POST':'GET',
     headers:{'Content-Type':'application/json',...(index>=0?{Authorization:`Bearer ${liveAuth?.tokens[index] ?? ['fixture-http-buyer','fixture-http-seller'][index]}`}:{})},
     ...(payload?{body:JSON.stringify(payload)}:{}),signal:AbortSignal.timeout(20000)});
-  assert.equal(response.status,status,`Authenticated ${path} status`);
+  const body=await response.json() as T;
+  assert.equal(response.status,status,`Authenticated ${path} status: ${(body as {error?:{message?:string}})?.error?.message??'unexpected response'}`);
   assert.match(response.headers.get('cache-control') ?? '',/no-store/);
-  return await response.json() as T;
+  return body;
 }
 try {
   const existing=(await pool.query('select count(*)::int n from pilot_exchanges')).rows[0].n;
@@ -248,6 +249,7 @@ try {
     });
     await eventually(check,label);
     assert.equal(positiveStep,null,`${label} bypassed the native model/tool call`);
+    process.stdout.write(`PASS: ${label} through native owner MCP.\n`);
   };
   const human=async(index:number,id:string,command:unknown)=>{
     const view=await commerce.get(actors[index]!,id);
@@ -283,7 +285,7 @@ try {
     positiveFlow, privateModelMcpPreparation: 'pass', humanDecisionRequired: 'pass', buyerPrivateCanariesAbsentFromSellerModel: 'pass', publicResearch, testedAt: new Date().toISOString() };
   await liveAuth?.close(); authClosed = true;
   await writeFile(liveAuth ? 'docs/hermes-auth-a2a-results.json' : 'docs/hermes-a2a-results.json', JSON.stringify(report,null,2)+'\n');
-  process.stdout.write('PASS: actual Hermes A2A between two isolated gateways, Postgres receipts, recipient wake, duplicate/restart recovery, hostile/foreign denial and positive connected sale through nine native agent preparations, exact approvals, one checkout/postage, QR artifact evidence, delivery/receipt and settlement. Model/provider responses are deterministic.\n');
+  process.stdout.write('PASS: actual Hermes A2A between two isolated gateways, Postgres receipts, recipient wake, duplicate/restart recovery, hostile/foreign denial and positive connected sale through fifteen native agent preparations including return shipping, exact approvals, one outbound checkout/postage, QR artifact evidence, delivery/receipt, settlement and seller-paid return recovery. Model/provider responses are deterministic.\n');
 } finally {
   await Promise.all(children.map(stop)); await app.close(); await pool.end(); await memoryRepository.close();
   await new Promise<void>(resolve => model.close(() => resolve()));

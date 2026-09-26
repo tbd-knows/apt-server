@@ -1,6 +1,7 @@
 /** Positive native-agent orchestration. Only OAuth/catalog, public source,
  * storage and commerce provider responses are synthetic. The caller supplies
  * actual Hermes owner turns and human commands; no tool result is fabricated. */
+import {checkConnectedReturn} from './connected-return-check.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -21,21 +22,23 @@ import type { RunContext } from '../src/memory/domain.js';
 import type { Operation } from '../src/commerce/domain.js';
 
 export class PositiveFixtureCommerce extends CommerceService {
+  observeTool?: (context:RunContext,input:unknown,result:unknown)=>void;
   providerFetch:FetchLike=async()=>{throw new Error('Synthetic shipping transport is not initialized');};
   override async invoke(context:RunContext,raw:unknown) {
     if((raw as {action?:string})?.action==='verify_dropoff') {
-      return verifyDropoff(this,context.userId,raw,request=>verifyPublicDropoff(request,url=>async()=>{
+      const result=await verifyDropoff(this,context.userId,raw,request=>verifyPublicDropoff(request,url=>async()=>{
         assert.equal(url,uspsLocationUrl);return new Response(uspsLocationHtml());
       }));
+      this.observeTool?.(context,raw,result);return result;
     }
-    return super.invoke(context,raw);
+    const result=await super.invoke(context,raw);this.observeTool?.(context,raw,result);return result;
   }
 }
 export type NativeAgentStep=(index:number,exchangeId:string,input:()=>Promise<unknown>,
   check:()=>Promise<boolean>,label:string)=>Promise<void>;
 export async function checkHermesPositive(commerce:PositiveFixtureCommerce,root:string,agent:NativeAgentStep,
   human:(index:number,id:string,command:unknown)=>Promise<unknown>,
-  eventually:(check:()=>Promise<boolean>,label:string)=>Promise<void>,
+  eventually:(check:()=>Promise<boolean>,label:string,maxWaitMs?:number)=>Promise<void>,
   http:<T>(index:number,path:string,payload?:unknown,status?:number)=>Promise<T>) {
   const repository=commerce.repository,pool=repository.pool,[A,B]=commerce.founders as [string,string];
   assert.equal(commerce.mode,'live','Live tags bind synthetic provider evidence; no real spending is configured.');
@@ -204,7 +207,32 @@ export async function checkHermesPositive(commerce:PositiveFixtureCommerce,root:
     const state=JSON.stringify(await commerce.invoke({userId:actor,runId:randomUUID(),requestMessageId:randomUUID()},{action:'state',exchangeId:id}));
     for(const secret of ['PRIVATE_ADDRESS_CANARY','PRIVATE_ACCOUNT_CANARY','TOKEN_CANARY','PRIVATE_ARTIFACT_CANARY']) assert(!state.includes(secret));
   }
-  return {exchangeId:id,agentPreparations:9,postagePurchases:purchases,checkouts,carrier:'USPS Ground Advantage',artifact:'provider QR PDF through authenticated sender-only HTTP',
+  let returnPreparations=0;
+  const prepareReturn=async(actor:string,input:()=>Promise<unknown>)=>{
+    const index=actor===A?0:1,expected=await input() as {action:string};let observed:unknown;
+    commerce.observeTool=(context,raw,result)=>{
+      const call=raw as {action?:string;exchangeId?:string};
+      if(context.userId===actor && call.action===expected.action && call.exchangeId===id) observed=result;
+    };
+    try {
+      await agent(index,id,input,async()=>observed!==undefined,`Native return ${expected.action}`);
+      returnPreparations++;return observed;
+    } finally {delete commerce.observeTool;}
+  };
+  await checkConnectedReturn(repository,await repository.get(id,A),connection,root,tools,true,{prepare:prepareReturn,
+    human:async(actor,input)=>human(actor===A?0:1,id,input)});
+  assert.equal(returnPreparations,6);
+  // The negative branches deliberately create a burst of owner decisions.
+  // Native delivery leases one message per sender every five seconds. Allow
+  // that bounded queue to drain; retain the shorter deadline for single steps.
+  const queued=(await pool.query<{pending:number}>(`select count(*)::int pending from pilot_messages
+    where exchange_id=$1 and sender_id<>recipient_id and a2a_received_at is null group by sender_id`,[id])).rows;
+  const pending=Math.max(0,...queued.map(row=>row.pending));
+  assert(pending<=40,'Unexpected return message burst');
+  await eventually(async()=>!(await pool.query(`select id from pilot_messages where exchange_id=$1 and sender_id<>recipient_id and a2a_received_at is null`,[id])).rowCount,
+    'Return native A2A receipts',Math.min(280_000,40_000+pending*6000));
+  return {exchangeId:id,agentPreparations:9+returnPreparations,returnPreparations,
+    returnFlow:'native seller validation/rates/carrier and buyer drop-off/quote preparation; authenticated human decisions; SDK fixture purchase/tracking/refund and recovery',postagePurchases:purchases,checkouts,carrier:'USPS Ground Advantage',artifact:'provider QR PDF through authenticated sender-only HTTP',
     serviceApprovalBoundary:'authenticated HTTP, wrong-owner/anonymous/tampered-digest denial',
     result:'completed with human receipt and exact seller reimbursement/payout',
     syntheticBoundaries:'model choices, authorized OAuth/catalog, photo storage, public location HTTP, Stripe, shipping and artifact download bytes; no real payment/postage/delivery'};

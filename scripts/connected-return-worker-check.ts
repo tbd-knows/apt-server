@@ -14,13 +14,13 @@ import {EasyPostProvider,StripeProvider,providerConfig,type PaymentFact} from '.
 import {FedExLocations} from '../src/commerce/locations.js';
 
 export async function checkConnectedReturnWorker(service:CommerceService,initial:Exchange,root:string,tools:ServiceInvocation['tool'][],
-  describe:(name:string,kind:string,fields:Record<string,string>)=>Promise<string>) {
+  describe:(name:string,kind:string,fields:Record<string,string>)=>Promise<string>,human?:(actor:string,input:unknown)=>Promise<unknown>) {
   const repository=service.repository,pool=repository.pool,A=initial.buyerId,B=initial.sellerId,offer=initial.offers.at(-1)!,quote=initial.returnPlan!.quote!;
   const originalRows=(await pool.query('select * from pilot_operations where exchange_id=$1',[initial.id])).rows;
   const originalPrivate=await repository.privateInput(initial,A);
   const current=()=>repository.get(initial.id,A);
   const save=(e:Exchange)=>pool.query('update pilot_exchanges set data=$2,revision=$3 where id=$1',[e.id,e,e.revision]);
-  const command=async(actor:string,input:unknown)=>service.command(actor,initial.id,randomUUID(),(await current()).revision,input);
+  const command=async(actor:string,input:unknown)=>human?human(actor,input):service.command(actor,initial.id,randomUUID(),(await current()).revision,input);
   const op=async(kind:string):Promise<Operation>=>{
     const row=(await pool.query('select * from pilot_operations where exchange_id=$1 and kind=$2',[initial.id,kind])).rows[0];assert(row);
     return {id:row.id,exchangeId:row.exchange_id,mode:row.mode,kind:row.kind,version:row.version,state:row.state,attempts:row.attempts,

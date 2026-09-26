@@ -67,3 +67,9 @@ cancellation/withdrawal, lost refund recovery, carrier-use refusal, and seller
 acceptance of a rejected refund. Provider and location responses are synthetic.
 These tests do not establish real hosted-account compatibility, real-model
 judgment, physical phone/code acceptance, or a delivered shipment.
+
+The native Hermes harness also runs this USPS return scenario: six actual
+owner-scoped return preparations, followed by authenticated HTTP human commands,
+approvals, recovery and receipt. It uses the same real PostgreSQL/SDK worker
+checks with synthetic provider transport. The combined sale/return report records
+15 native preparations and distinguishes synthetic boundaries.

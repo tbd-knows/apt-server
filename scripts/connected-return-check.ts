@@ -19,12 +19,14 @@ import { shippoAddressArguments,shippoOperationMetadata } from '../src/commerce/
 import { upsLocationHtml,upsLocationUrl } from '../test/fixtures/ups-dropoff.js';
 import { uspsLocationHtml,uspsLocationUrl } from '../test/fixtures/usps-dropoff.js';
 
-export async function checkConnectedReturn(repository:CommerceRepository,original:Exchange,connection:string,root:string,tools:ServiceInvocation['tool'][],noPrinter=false) {
+export async function checkConnectedReturn(repository:CommerceRepository,original:Exchange,connection:string,root:string,tools:ServiceInvocation['tool'][],noPrinter=false,
+  native?:{prepare:(actor:string,input:()=>Promise<unknown>)=>Promise<unknown>;human:(actor:string,input:unknown)=>Promise<unknown>}) {
   const pool=repository.pool,A=original.buyerId,B=original.sellerId;
   const originalOperations=(await pool.query('select * from pilot_operations where exchange_id=$1',[original.id])).rows;
   const originalBuyer=await repository.privateInput(original,A),originalSeller=await repository.privateInput(original,B);
   const service=new CommerceService(repository,[A,B],original.mode,undefined,null,true);
-  const command=async(actor:string,input:unknown)=>service.command(actor,original.id,randomUUID(),(await service.get(actor,original.id)).revision,input);
+  const prepare=async<T>(actor:string,input:()=>Promise<unknown>,fallback:()=>Promise<T>):Promise<T>=>native?await native.prepare(actor,input) as T:fallback();
+  const command=async(actor:string,input:unknown)=>native?native.human(actor,input):service.command(actor,original.id,randomUUID(),(await service.get(actor,original.id)).revision,input);
   const revision=async()=>(await repository.get(original.id,B)).revision;
   const connected=(await pool.query('select generation,endpoint from pilot_connections where id=$1',[connection])).rows[0];
   const describe=async(name:string,kind:string,fields:Record<string,string>)=>{
@@ -103,15 +105,17 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
       consentId:consent.id,descriptionActionId:creationDescription});
     await assert.rejects(prepareShippingRates(service,B,randomUUID(),await rateInput()),/Validate both/);
     for(const addressRole of ['buyer','seller']) {
-      const action=await prepareShippingValidation(service,B,randomUUID(),{...await rateInput(),action:'prepare_shipping_validation',descriptionActionId:validationDescription,addressRole});
+      const input=async()=>({...await rateInput(),action:'prepare_shipping_validation',descriptionActionId:validationDescription,addressRole});
+      const action=await prepare(B,input,async()=>prepareShippingValidation(service,B,randomUUID(),await input()));
       expectedAction=action.id;
       assert.equal((await connections.decideAction(B,action.id,action.digest,true,'free_address_validation')).result?.structuredContent?.addressValidation,'valid');
     }
-    const rate=await prepareShippingRates(service,B,randomUUID(),await rateInput());expectedAction=rate.id;
+    const rate=await prepare(B,rateInput,async()=>prepareShippingRates(service,B,randomUUID(),await rateInput()));expectedAction=rate.id;
     assert.equal((await connections.decideAction(B,rate.id,rate.digest,true,'free_shipping_rates')).state,'returned');
     assert.equal(created,1);assert.equal((await prepareShippingRates(service,B,randomUUID(),await rateInput())).id,rate.id);
-    const option=await prepareShippingOption(service,B,randomUUID(),{action:'prepare_shipping_option',exchangeId:order.id,revision:await revision(),
-      rateActionId:rate.id,rateId:'return_rate_fixture',descriptionActionId:carrierDescription});expectedAction=option.id;
+    const optionInput=async()=>({action:'prepare_shipping_option',exchangeId:order.id,revision:await revision(),
+      rateActionId:rate.id,rateId:'return_rate_fixture',descriptionActionId:carrierDescription});
+    const option=await prepare(B,optionInput,async()=>prepareShippingOption(service,B,randomUUID(),await optionInput()));expectedAction=option.id;
     assert.equal((await connections.decideAction(B,option.id,option.digest,true,'free_shipping_option')).state,'returned');
     for(const actor of [A,B]) {
       const shared=await returnShippingOptions(service,actor,order.id);
@@ -126,16 +130,16 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
     const dropoffInput=async()=>({action:'verify_dropoff',exchangeId:order.id,revision:await revision(),carrierActionId:option.id,researchId:research.id,sourceId});
     const verify:Parameters<typeof verifyDropoff>[3]=request=>verifyPublicDropoff(request,()=>async()=>new Response(noPrinter?uspsLocationHtml():upsLocationHtml()));
     await assert.rejects(verifyDropoff(service,B,await dropoffInput(),verify),/other participant/);
-    const location=await verifyDropoff(service,A,await dropoffInput(),verify);
+    const location=await prepare(A,dropoffInput,async()=>verifyDropoff(service,A,await dropoffInput(),verify));
     assert.equal(location.dropoff.carrier,noPrinter?'USPS':'UPS');assert.equal(location.dropoff.artifact,noPrinter?'label_qr':'pdf');
     assert.equal((await service.get(A,order.id)).verifiedDropoff?.id,location.id);
     assert.equal((await service.get(B,order.id)).verifiedDropoff,null);
     // The actual buyer agent prepares a private exact return quote. Sharing
-    // is a separate human action and never selects a payer or queues postage.
+    // is a separate human action; seller funding is explicit but purchase needs both approvals.
     const input=async()=>({action:'prepare_connected_return',exchangeId:order.id,revision:await revision(),dropoffId:location.id});
     await assert.rejects(prepareConnectedReturn(service,B,randomUUID(),await input()),/other participant/);
     const turn={userId:A,runId:randomUUID(),requestMessageId:randomUUID()};
-    const draft=await service.invoke(turn,await input()) as NonNullable<Awaited<ReturnType<typeof prepareConnectedReturn>>>;
+    const draft=await prepare(A,input,async()=>service.invoke(turn,await input())) as NonNullable<Awaited<ReturnType<typeof prepareConnectedReturn>>>;
     assert.equal(draft.funding,'seller_absorbed');assert.equal(draft.quote.shippingAmount,915);
     assert.equal(draft.quote.artifact,noPrinter?'label_qr':'pdf');
     assert.equal((await service.get(B,order.id)).connectedReturnDraft,null);
@@ -173,7 +177,7 @@ export async function checkConnectedReturn(repository:CommerceRepository,origina
       assert(!JSON.stringify((await service.get(actor,order.id)).privateInput).includes('connectedReturn'));
     }
     assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[order.id])).rows[0].n,0);
-    await checkConnectedReturnWorker(service,await repository.get(order.id,A),root,tools,describe);
+    await checkConnectedReturnWorker(service,await repository.get(order.id,A),root,tools,describe,native?.human);
     // Changed private input invalidates a newly prepared draft before sharing.
     const next=await prepareConnectedReturn(service,A,randomUUID(),await input());assert(next);
     // An old outbound carrier receipt cannot become reverse-shipment evidence.

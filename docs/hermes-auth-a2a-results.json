@@ -15,8 +15,10 @@
   "duplicateNoSecondOwnerTurn": "pass",
   "restartPendingDelivery": "pass",
   "positiveFlow": {
-    "exchangeId": "fa0d9a40-59ae-4d1a-8f2b-461300f24eb1",
-    "agentPreparations": 9,
+    "exchangeId": "a75ad405-a254-4d7d-9a65-82988d7fee86",
+    "agentPreparations": 15,
+    "returnPreparations": 6,
+    "returnFlow": "native seller validation/rates/carrier and buyer drop-off/quote preparation; authenticated human decisions; SDK fixture purchase/tracking/refund and recovery",
     "postagePurchases": 1,
     "checkouts": 1,
     "carrier": "USPS Ground Advantage",
@@ -29,5 +31,5 @@
   "humanDecisionRequired": "pass",
   "buyerPrivateCanariesAbsentFromSellerModel": "pass",
   "publicResearch": "not run",
-  "testedAt": "2026-09-26T02:08:41.572Z"
+  "testedAt": "2026-09-26T12:27:25.324Z"
 }
