@@ -349,7 +349,7 @@ try {
   assert.equal((await pool.query('select count(*)::int n from pilot_operations where exchange_id=$1',[draft.id])).rows[0].n,0);
   const final=await service().get(B,draft.id);assert.equal(final.verifiedDropoff?.state,'stale');assert.equal(final.payment,'unpaid');assert.equal(final.shipping,'none');assert.equal(final.offer?.postageFunding,'seller_reimbursed');
   // Move this disposable fixture (never a real exchange) to live commerce to
-  // prove the unfinished execution gate refuses even fully approved live terms.
+  // prove a service without the connected driver refuses even fully approved live terms.
   const liveExchange=await repository.get(draft.id,B);liveExchange.mode='live';
   await pool.query('update pilot_exchanges set mode=$2,data=$3 where id=$1',[draft.id,'live',liveExchange]);
   await pool.query('update pilot_connections set mode=$2 where id=$1',[connection,'live']);

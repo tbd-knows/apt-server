@@ -1,12 +1,13 @@
 # Two-founder commerce pilot (TBD-12)
 
-The agent-led rework is in progress; both PRs remain Draft. Hermes native A2A
+The agent-led implementation is undergoing acceptance; both PRs remain Draft. Hermes native A2A
 delivery and durable private action preparation are implemented and tested with
 two actual isolated gateways, Postgres and a deterministic model. Owner-scoped
 service research now runs through the gateway using Hermes's keyless search
 provider; source reads are bounded public HTTPS requests. See
-[A2A implementation and evidence](hermes-a2a.md). The native harness also joins nine owner-agent preparations with exact human
-approvals and synthetic provider fulfillment through delivery/receipt/settlement.
+[A2A implementation and evidence](hermes-a2a.md). The native harness joins 15 owner-agent preparations (nine sale and six return)
+with authenticated human decisions and synthetic provider fulfillment,
+receipt/settlement and seller-paid return recovery.
 This does not establish live-model discovery or real-provider acceptance.
 
 Stripe is the only mandatory commerce-provider integration. The EasyPost/FedEx
@@ -24,7 +25,7 @@ approved SDK harness, returning private-data-minimized carrier/price options.
 Authenticated production schema compatibility remains unverified. Exact connected
 offers, once-only paid label dispatch, private artifacts, tracking, and unused-postage
 refunds are now integrated into the worker and exercised with SDK/Postgres fixtures.
-Unchanged paid postage can receive fresh two-owner permission after expiry or original-account reauthorization, reusing only its original never-dispatched operation; price changes require refund and a new sale. Connected return preparation supports fresh consent, reversed private addresses, buyer packing and drop-off research. The buyer agent can prepare an exact private return quote for the buyer to share; shared return funding remains explicitly undecided and purchase stays blocked. Return postage purchase remains incomplete. USPS Ground Advantage supports a verified retail Label Broker no-printer path with canonical provider-issued PNG/PDF printing artifacts; actual provider purchase and physical scan acceptance are still unverified. Hosted-service rates are explicitly live-provider evidence even when
+Unchanged paid postage can receive fresh two-owner permission after expiry or original-account reauthorization, reusing only its original never-dispatched operation; price changes require refund and a new sale. Connected return preparation supports fresh consent, reversed private addresses, buyer packing and drop-off research. The buyer agent prepares an exact private return quote for the buyer to share. Both owners separately approve seller-absorbed return postage before one seller-account purchase. Private buyer artifacts, tracking, delivery/receipt, full original Stripe refund/reversal and unused-postage recovery are implemented; see [connected returns](connected-returns.md). USPS Ground Advantage supports a verified retail Label Broker no-printer path with canonical provider-issued PNG/PDF printing artifacts; actual provider purchase and physical scan acceptance are still unverified. Hosted-service rates are explicitly live-provider evidence even when
 the surrounding commerce exchange is in test mode.
 The [persistent single-host deployment](persistent-pilot-host.md) now includes
 stable private routes, three supervised services, HTTPS routing, provisioning and
@@ -120,6 +121,9 @@ Founders must confirm location, eligibility and tax treatment before live mode.
 - [Private Supabase buckets](https://supabase.com/docs/guides/storage/buckets/fundamentals)
   store seller photos with participant authorization and bounded access.
 
+See [the acceptance and ownership register](pilot-acceptance.md) for each
+remaining verification gate and its required evidence.
+
 ## Live pilot prerequisites
 
 | Owner | Required next action | Evidence needed |
@@ -147,9 +151,11 @@ human review and live completion evidence exists.
    chosen environment, back up, and apply it through the normal migration process.
    Never run the disposable fixture scripts against a shared/live database.
    Apply `20260923125200_hermes_a2a_delivery.sql` as well. The server requires all
-   nine migrations, including `20260923220633_agent_service_research.sql`, before
+   13 migrations, through `20260926020019_connected_return_refunds.sql`, before
    starting commerce. Reprovision both profiles to install
-   the commerce A2A plugin, then restart the gateways and server.
+   the commerce A2A plugin, then restart the gateways and server. Restart both
+   gateway MCP children when updating the bridge schema, including the
+   `prepare_connected_return` action.
    On a host installation, install `ddgs==9.16.0` into that Hermes Python
    environment; the container image includes it. This search path needs no API
    credential. Its upstream availability/rate limits still apply.
@@ -252,7 +258,7 @@ a new payment or postage operation.
 | Refund failure | Review/reconcile the same refund operation. A known pending refund is retrieved by ID, including beyond the creation idempotency window. Buyer refund and transfer reversal must both be confirmed. Partial external refunds/reversals or disputes require provider-dashboard reconciliation. |
 | Unused postage | Separate label refund operation. Rejected carrier refund remains visible; both founders may explicitly approve absorbing that postage cost. It is never called a buyer refund. |
 | After carrier acceptance | Record a problem and propose a remedy. Both founders approve exact refund/continue/return terms. No automatic dispute adjudication. |
-| Agreed return | Connected sales require fresh two-owner disclosure, reversed addresses, buyer packing and a verified separate option. Connected return purchase is still blocked pending the additional funding/lifecycle implementation. Historical platform-funded sales retain their separately approved legacy return path. |
+| Agreed return | Connected sales require fresh two-owner disclosure, reversed addresses, buyer packing and a verified separate option. Both owners approve the exact seller-absorbed return postage before one seller-account purchase. Buyer-only artifacts and canonical tracking precede seller receipt and the full original refund/reversal; unused-postage cancellation/refund is separate. Historical platform-funded sales retain their separately approved legacy return path. |
 
 Return address changes are deliberately blocked; resolve changed locations with
 the founders before shipping. Connected free return preparation supports printed
@@ -317,8 +323,8 @@ Changing shipping inputs, disclosure consent, service connection, discovery area
 or rate validity invalidates its binding. The first credential-free verifier
 supports actual FedEx Ground and UPS Store Ground location pages for a printed label; it refuses QR
 return claims, generic finder pages and unsupported services. No postage is bought
-and no appointment is booked by this check. The exact connected offer and paid
-lifecycle are still unfinished. See `agent-service-research.md` for the live public
+and no appointment is booked by this check. Exact connected offers and the paid lifecycle are implemented and fixture-tested;
+actual provider-account compatibility remains unverified. See `agent-service-research.md` for the live public
 source probe and deterministic/database evidence boundaries.
 
 ### Connected offer review
@@ -381,7 +387,9 @@ with synthetic transport responses, including price/account mismatch,
 revocation before and during a read, fresh-generation description requirements,
 expiry, transaction/refund identity and private-output checks. No real postage
 was purchased. The worker integration described below replaces the earlier blanket
-payment gate with capability and payment checks. Connected returns remain incomplete.
+payment gate with capability and payment checks. Seller-paid connected returns
+and recovery are implemented and covered by both the SDK/worker fixtures and
+six native owner-agent preparations.
 Two test accounts do not remove the remaining live-model, Stripe, service authorization,
 device, physical delivery, review and merge requirements.
 

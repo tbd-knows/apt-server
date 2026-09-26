@@ -50,14 +50,15 @@ shipping state or provider operation.
   `track_package` and `validate_address`. No UPS connection or label purchase was
   performed.
 
-## Remaining implementation
+## Implementation and remaining acceptance
 
 Owner-approved remote MCP inspection is now implemented as described below.
 Remote OAuth connections now support owner review, public-client registration,
 PKCE, encrypted credentials, rechecking/refresh and disconnection as described
 below. Connected outbound fulfillment now enforces exact approvals and canonical
 reconciliation. Authenticated provider compatibility and live acceptance remain
-unverified; connected return purchase is still incomplete.
+unverified. [Seller-paid connected returns](connected-returns.md) now implement
+separate approval, purchase, artifacts, tracking and refund/recovery.
 Unsupported/credential-required services must remain explicit blockers. In
 particular, the [official UPS MCP](https://github.com/UPS-API/ups-mcp) documents
 tracking/address validation and application credentials; its existence does not
@@ -453,8 +454,8 @@ separate. Mobile shows the exact breakdown and these consequences to either role
 No exposed model/client action can invent an offer or set its funding. The legacy
 platform-account worker refuses these offers rather than paying the postage twice.
 The separate connected worker now handles the exact offer, approved label purchase,
-private artifact, tracking and unused-postage refund. Connected reverse shipments
-remain incomplete. A selected rate alone never authorizes any paid action.
+private artifact, tracking and unused-postage refund. Connected reverse shipments use the separately approved seller-paid
+return lifecycle. A selected rate alone never authorizes any paid action.
 
 ## Verifying an observed public drop-off location
 
