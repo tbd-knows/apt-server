@@ -65,7 +65,15 @@ async function port() {
 }
 async function eventually(check: () => Promise<boolean>, label: string, maxWaitMs=40_000) {
   for (let n = 0; n < Math.ceil(maxWaitMs/250); n++) { if (await check()) return; await pause(250); }
-  throw new Error(`${label} timed out. ${diagnostics.join('\n').slice(-3000)}`);
+  const runs=(await pool.query('select status,error_code,count(*)::int count from agent_runs group by status,error_code')).rows;
+  // The initial decline contains only fixture text and no provider/private-form
+  // data. Retain its tool feedback so a rejected call is not reported as an
+  // unexplained gateway timeout. Never dump full model requests or auth headers.
+  const declineFeedback=label==='Private model MCP preparation'?calls.flatMap(c=>{
+    const body=JSON.parse(c.body) as {messages?:{role?:string;content?:unknown}[]};
+    return (body.messages??[]).filter(m=>m.role==='tool').map(m=>m.content);
+  }).slice(-3):[];
+  throw new Error(`${label} timed out. Runs: ${JSON.stringify(runs)}; decline tool feedback: ${JSON.stringify(declineFeedback)}. ${diagnostics.join('\n').slice(-3000)}`);
 }
 async function stop(child: ChildProcess) {
   if (child.exitCode !== null) return;
