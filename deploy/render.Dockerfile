@@ -8,6 +8,7 @@ RUN npm run build
 
 FROM python:3.12-slim-bookworm AS runtime
 RUN apt-get update && apt-get install --yes --no-install-recommends git ca-certificates libatomic1 gosu \
+    && test -x /usr/sbin/gosu \
     && rm -rf /var/lib/apt/lists/* \
     && python -m venv /opt/tbd/hermes \
     && git clone --depth 1 --branch v2026.8.19 --single-branch https://github.com/NousResearch/hermes-agent.git /opt/tbd/hermes/source \

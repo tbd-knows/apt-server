@@ -5,4 +5,4 @@ set -eu
 mkdir -p /var/lib/tbd /etc/tbd
 chown tbd:tbd /var/lib/tbd /etc/tbd
 chmod 700 /var/lib/tbd /etc/tbd
-exec gosu tbd "$@"
+exec /usr/sbin/gosu tbd "$@"
