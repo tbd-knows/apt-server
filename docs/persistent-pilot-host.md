@@ -57,7 +57,7 @@ credentials. Rotating it is a coordinated credential migration, not a restart.
    /opt/tbd/hermes/bin/hermes --version
    ```
 
-   The MCP extra is required by the Apt bridge; editable installation preserves
+   Verify the checkout is `fcbd1076a93841fa88855acce810e342a5b78101` before provisioning. The MCP extra is required by the Apt bridge; editable installation preserves
    Hermes's checkout-relative files. `ddgs` provides the existing keyless public
    research path. This does not configure any new commerce-provider account.
 3. Create `/var/lib/tbd/hermes` owned by `tbd:tbd`, mode 0700, and `/etc/tbd`
@@ -82,7 +82,7 @@ credentials. Rotating it is a coordinated credential migration, not a restart.
    Keep `server.env` mode 0640 and owned by `root:tbd`. Hermes service units
    receive only their routing file and load their own profile `.env`; they do
    not inherit Stripe, Supabase or root-secret variables from the server.
-4. Review and apply all 12 repository migrations through the project's normal
+4. Review and apply all 13 repository migrations through the project's normal
    migration process against the chosen database. Back up before upgrading.
    `npm run test:local-db` is destructive and belongs only on the disposable
    local test database; it is never a deployment/migration command.
