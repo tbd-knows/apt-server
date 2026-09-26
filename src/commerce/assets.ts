@@ -23,7 +23,8 @@ export async function sanitizePhoto(bytes: Buffer) {
 export class CommerceAssets {
   private readonly storage;
   constructor(private readonly commerce: CommerceService, supabaseUrl: string, secret: string, private readonly bucket: string,
-    private readonly shipping: EasyPostProvider, private readonly connectedShipping?: ConnectedShippingRead) {
+    private readonly shipping: EasyPostProvider, private readonly connectedShipping?: ConnectedShippingRead,
+    private readonly download=downloadShippingArtifact) {
     this.storage = createClient(supabaseUrl, secret, { auth: { persistSession: false, autoRefreshToken: false } }).storage;
   }
   async upload(actor: string, exchangeId: string, raw: unknown) {
@@ -77,7 +78,7 @@ export class CommerceAssets {
       if (!operation) conflict('The purchased shipping transaction has not been recorded.');
       const transaction = await this.connectedShipping.transaction(exchange,offer,operation.id,operation.provider_id);
       if (transaction.state !== 'purchased') conflict('The service has not returned usable purchased postage.');
-      return downloadShippingArtifact(transaction.privateArtifactUrl,transaction.artifact);
+      return this.download(transaction.privateArtifactUrl,transaction.artifact);
     }
     const shipment = await this.shipping.retrieve(quote.shipmentId);
     this.shipping.validateApproved(shipment, quote);
@@ -86,6 +87,6 @@ export class CommerceAssets {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' || parsed.username || parsed.password
       || !/^(easypost-files\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com|[a-z0-9-]+\.easypost\.com)$/.test(parsed.hostname)) conflict('Label download host is not approved.');
-    return downloadShippingArtifact(url,'pdf');
+    return this.download(url,'pdf');
   }
 }

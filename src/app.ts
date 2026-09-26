@@ -54,6 +54,7 @@ export interface AppDependencies {
   commerceService?: CommerceService;
   commerceAssets?: CommerceAssets;
   commerceStripe?: StripeProvider;
+  commerceConnections?: CommerceConnections;
 }
 
 export async function buildApp(dependencies: AppDependencies): Promise<FastifyInstance> {
@@ -120,7 +121,8 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   };
 
   if (dependencies.commerceService) commerceRoutes(app, dependencies.commerceService, authenticate, dependencies.commerceAssets);
-  if (dependencies.commerceService && dependencies.commerceStripe?.config.publicUrl) connectionRoutes(app,
+  if (dependencies.commerceConnections) connectionRoutes(app,dependencies.commerceConnections,authenticate);
+  else if (dependencies.commerceService && dependencies.commerceStripe?.config.publicUrl) connectionRoutes(app,
     new CommerceConnections(dependencies.commerceService,dependencies.config.hermes.keySecret,dependencies.commerceStripe.config.publicUrl),authenticate);
   if (dependencies.commerceService && dependencies.commerceStripe) setupRoutes(app, dependencies.commerceService,
     dependencies.commerceStripe, dependencies.commerceStripe.config, authenticate);

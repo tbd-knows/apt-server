@@ -15,18 +15,19 @@
   "duplicateNoSecondOwnerTurn": "pass",
   "restartPendingDelivery": "pass",
   "positiveFlow": {
-    "exchangeId": "c628fd57-5378-4247-bd8f-0f905088a9f2",
+    "exchangeId": "fe87f12a-139a-4f99-977b-47ec6dcfa881",
     "agentPreparations": 9,
     "postagePurchases": 1,
     "checkouts": 1,
     "carrier": "USPS Ground Advantage",
-    "artifact": "provider QR PDF",
+    "artifact": "provider QR PDF through authenticated sender-only HTTP",
+    "serviceApprovalBoundary": "authenticated HTTP, wrong-owner/anonymous/tampered-digest denial",
     "result": "completed with human receipt and exact seller reimbursement/payout",
-    "syntheticBoundaries": "model choices, authorized OAuth/catalog, photo storage, public location HTTP, Stripe and shipping responses; no real payment/postage/delivery"
+    "syntheticBoundaries": "model choices, authorized OAuth/catalog, photo storage, public location HTTP, Stripe, shipping and artifact download bytes; no real payment/postage/delivery"
   },
   "privateModelMcpPreparation": "pass",
   "humanDecisionRequired": "pass",
   "buyerPrivateCanariesAbsentFromSellerModel": "pass",
   "publicResearch": "not run",
-  "testedAt": "2026-09-25T21:36:11.894Z"
+  "testedAt": "2026-09-26T01:29:29.832Z"
 }

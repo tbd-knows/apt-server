@@ -21,6 +21,7 @@ import type { RunContext } from '../src/memory/domain.js';
 import type { Operation } from '../src/commerce/domain.js';
 
 export class PositiveFixtureCommerce extends CommerceService {
+  providerFetch:FetchLike=async()=>{throw new Error('Synthetic shipping transport is not initialized');};
   override async invoke(context:RunContext,raw:unknown) {
     if((raw as {action?:string})?.action==='verify_dropoff') {
       return verifyDropoff(this,context.userId,raw,request=>verifyPublicDropoff(request,url=>async()=>{
@@ -32,14 +33,14 @@ export class PositiveFixtureCommerce extends CommerceService {
 }
 export type NativeAgentStep=(index:number,exchangeId:string,input:()=>Promise<unknown>,
   check:()=>Promise<boolean>,label:string)=>Promise<void>;
-export async function checkHermesPositive(commerce:CommerceService,root:string,agent:NativeAgentStep,
+export async function checkHermesPositive(commerce:PositiveFixtureCommerce,root:string,agent:NativeAgentStep,
   human:(index:number,id:string,command:unknown)=>Promise<unknown>,
   eventually:(check:()=>Promise<boolean>,label:string)=>Promise<void>,
-  createRequest?:(input:unknown)=>Promise<Awaited<ReturnType<CommerceService['get']>>>) {
+  http:<T>(index:number,path:string,payload?:unknown,status?:number)=>Promise<T>) {
   const repository=commerce.repository,pool=repository.pool,[A,B]=commerce.founders as [string,string];
   assert.equal(commerce.mode,'live','Live tags bind synthetic provider evidence; no real spending is configured.');
   const requestInput={request:{item:'White Nike Air Force 1',style:'Low',size:'10',sizingSystem:'US men',condition:'Used good'},privateBudget:937123};
-  const draft=createRequest?await createRequest(requestInput):await commerce.create(A,randomUUID(),requestInput);
+  const draft=await http<Awaited<ReturnType<CommerceService['get']>>>(0,'/v1/commerce/requests',{key:randomUUID(),input:requestInput});
   const id=draft.id;
   const view=(index=1)=>commerce.get(index===0?A:B,id);
   const revision=async()=>(await view()).revision;
@@ -125,7 +126,7 @@ export async function checkHermesPositive(commerce:CommerceService,root:string,a
     return new Response(JSON.stringify({jsonrpc:'2.0',id:message.id,result}),{headers:{'content-type':'application/json'}});
   };
   const execute=(url:string,invocation:ServiceInvocation,before:()=>Promise<void>,_fetch:unknown,redact?:((s:string)=>string))=>executeMcp(url,invocation,before,fixtureFetch,redact);
-  const connections=new CommerceConnections(commerce,root,'https://app.tbd.com',undefined,undefined,execute);
+  commerce.providerFetch=fixtureFetch;
   await prepare(1,{type:'propose_shipping_data',connectionId:connection},'Seller agent prepares free data consent');
   const consent=(await view()).shippingData!;assert.equal(consent.approvalCount,0);
   for(const index of [0,1]) await command(index,{type:'decide_shipping_data',consentId:consent.id,consentDigest:consent.digest,approve:true,acknowledgeServiceAccountAccess:true});
@@ -134,7 +135,12 @@ export async function checkHermesPositive(commerce:CommerceService,root:string,a
     await agent(1,id,input,async()=>!!(await pool.query("select id from pilot_service_actions where exchange_id=$1 and state='review'",[id])).rowCount,label);
     const action=(await view()).serviceActions.find(a=>!before.has(a.id) && a.state==='review');assert(action,label);
     assert.equal(purchases,0,'Model preparation bought postage');
-    return connections.decideAction(B,action.id,action.digest,true,purpose);
+    const flag={free_address_validation:'approveFreeAddressValidation',free_shipping_rates:'approveFreeShippingRates',free_shipping_option:'approveFreeShippingOption'}[purpose];
+    const payload={digest:action.digest,approve:true,[flag]:true},path=`/v1/commerce/service-actions/${action.id}/decision`;
+    await http(0,path,payload,404);await http(-1,path,payload,401);
+    await http(1,path,{...payload,digest:'f'.repeat(64)},409);
+    return http<Awaited<ReturnType<CommerceConnections['decideAction']>>>(1,path,payload);
+
   };
   const base=async()=>({exchangeId:id,revision:await revision(),connectionId:connection,consentId:consent.id});
   for(const addressRole of ['buyer','seller']) await serviceStep(async()=>({...await base(),action:'prepare_shipping_validation',descriptionActionId:validationDescription,addressRole}),
@@ -175,11 +181,18 @@ export async function checkHermesPositive(commerce:CommerceService,root:string,a
   };
   await worker().process(await operation('checkout'));assert.equal(checkouts,1);assert.equal(purchases,0);assert.equal((await view()).payment,'pending');
   status='paid';await worker().process(await operation('checkout'));
+  await http(1,`/v1/commerce/exchanges/${id}/label`,undefined,409);
   labelId=(await operation('label')).id;
   await Promise.all([worker().process(await operation('label')),worker().process(await operation('label'))]);
   assert.equal(purchases,1);assert.equal((await view()).shipping,'label_ready');
   const current=await repository.get(id,B),artifact=await connected.transaction(current,offer,labelId,'positive_transaction');
   assert.equal(artifact.state,'purchased');if(artifact.state==='purchased') {assert.equal(artifact.artifact,'label_qr');assert(artifact.privateArtifactUrl.includes('positive-code.pdf'));}
+  const labelPath=`/v1/commerce/exchanges/${id}/label`;
+  await http(0,labelPath,undefined,403);await http(-1,labelPath,undefined,401);
+  const downloaded=await http<{artifact:string;mime:string;base64:string}>(1,labelPath);
+  assert.equal(downloaded.artifact,'label_qr');assert.equal(downloaded.mime,'application/pdf');
+  assert(Buffer.from(downloaded.base64,'base64').toString().startsWith('%PDF-1.7'));
+  assert(!JSON.stringify(downloaded).includes('PRIVATE_ARTIFACT_CANARY'));
   await command(1,{type:'dropped_off'});assert.equal((await view()).carrierAcceptedAt,null,'Human handoff invented carrier evidence');
   tracking='TRANSIT';await worker().process(await operation('label'));assert.equal((await view()).shipping,'in_transit');
   tracking='DELIVERED';await worker().process(await operation('label'));assert.equal((await view()).shipping,'delivered');
@@ -191,7 +204,8 @@ export async function checkHermesPositive(commerce:CommerceService,root:string,a
     const state=JSON.stringify(await commerce.invoke({userId:actor,runId:randomUUID(),requestMessageId:randomUUID()},{action:'state',exchangeId:id}));
     for(const secret of ['PRIVATE_ADDRESS_CANARY','PRIVATE_ACCOUNT_CANARY','TOKEN_CANARY','PRIVATE_ARTIFACT_CANARY']) assert(!state.includes(secret));
   }
-  return {exchangeId:id,agentPreparations:9,postagePurchases:purchases,checkouts,carrier:'USPS Ground Advantage',artifact:'provider QR PDF',
+  return {exchangeId:id,agentPreparations:9,postagePurchases:purchases,checkouts,carrier:'USPS Ground Advantage',artifact:'provider QR PDF through authenticated sender-only HTTP',
+    serviceApprovalBoundary:'authenticated HTTP, wrong-owner/anonymous/tampered-digest denial',
     result:'completed with human receipt and exact seller reimbursement/payout',
-    syntheticBoundaries:'model choices, authorized OAuth/catalog, photo storage, public location HTTP, Stripe and shipping responses; no real payment/postage/delivery'};
+    syntheticBoundaries:'model choices, authorized OAuth/catalog, photo storage, public location HTTP, Stripe, shipping and artifact download bytes; no real payment/postage/delivery'};
 }

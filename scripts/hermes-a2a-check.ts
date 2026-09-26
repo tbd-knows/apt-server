@@ -3,6 +3,13 @@
 import assert from 'node:assert/strict';
 import { checkHermesPositive, PositiveFixtureCommerce, type NativeAgentStep } from './hermes-positive-check.js';
 import { testAccountAuth } from './test-account-auth.js';
+import { CommerceConnections } from '../src/commerce/connections.js';
+import { CommerceAssets } from '../src/commerce/assets.js';
+import { ConnectedShipping } from '../src/commerce/connected-shipping.js';
+import { executeMcp } from '../src/commerce/mcp-execution.js';
+import { EasyPostProvider, providerConfig } from '../src/commerce/providers.js';
+import { validateShippingArtifact } from '../src/commerce/shipping-artifact.js';
+import { AppError } from '../src/errors.js';
 import { randomUUID } from 'node:crypto';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -107,8 +114,20 @@ const config = loadConfig({ NODE_ENV: 'test', LOG_LEVEL: 'silent', APT_PILOT_USE
   HERMES_PROFILE_URL_MAP: JSON.stringify(Object.fromEntries(profiles.map((p,i) => [p, `http://127.0.0.1:${apiPorts[i]}`]))),
   HERMES_A2A_PROFILE_URL_MAP: JSON.stringify(Object.fromEntries(profiles.map((p,i) => [p, `http://127.0.0.1:${a2aPorts[i]}`]))),
 });
-const app = await buildApp({ config, repository: chat, auth: liveAuth?.auth ?? { authenticate: async () => { throw new Error('Fixture has no public auth'); } },
-  runtime: new MemoryAgentRuntime(new HermesAgentRuntime(config.hermes), memory, new MemoryMaterializer(home)), memoryService: memory, commerceService: commerce });
+const providerExecute:typeof executeMcp=(url,invocation,before,_fetch,redact)=>executeMcp(url,invocation,before,
+  (url,init)=>commerce.providerFetch(url,init),redact);
+const commerceConnections=new CommerceConnections(commerce,secret,'https://app.tbd.com',undefined,undefined,providerExecute);
+const commerceAssets=new CommerceAssets(commerce,'https://example.supabase.co','fixture-key','fixture-private-photos',
+  new EasyPostProvider(providerConfig({},'live')),new ConnectedShipping(commerce,secret,providerExecute),async(url,artifact)=>{
+    assert.equal(url,'https://deliver.goshippo.com/positive-code.pdf?PRIVATE_ARTIFACT_CANARY');
+    assert.equal(artifact,'label_qr');
+    return validateShippingArtifact(Buffer.from('%PDF-1.7\nSynthetic provider QR document bytes\n%%EOF'),'application/pdf',artifact);
+  });
+const app = await buildApp({ config, repository: chat, auth: liveAuth?.auth ?? { authenticate: async token => {
+    const index=['fixture-http-buyer','fixture-http-seller'].indexOf(token);
+    if(index<0) throw new AppError('UNAUTHENTICATED','Fixture bearer required.');return {id:actors[index]!};
+  } },
+  runtime: new MemoryAgentRuntime(new HermesAgentRuntime(config.hermes), memory, new MemoryMaterializer(home)), memoryService: memory, commerceService: commerce, commerceConnections, commerceAssets });
 const transport = new CommerceA2A(commerce, config.hermes);
 async function start(index: number) {
   const child = spawn(cli, ['--profile', profiles[index]!, 'gateway', 'run', '--force', '--accept-hooks'], {
@@ -127,12 +146,13 @@ async function send(index: number, text: string, contextId: string, token?: stri
     body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'SendMessage', params: {
       message: { messageId: randomUUID(), role: 'ROLE_USER', contextId, parts: [{ text }] } } }), signal: AbortSignal.timeout(15000) });
 }
-async function publicRequest(index:number,path:string,payload?:unknown,status=200) {
+async function publicRequest<T=Awaited<ReturnType<CommerceService['get']>>>(index:number,path:string,payload?:unknown,status=200):Promise<T> {
   const response=await fetch(`http://127.0.0.1:${bridgePort}${path}`,{method:payload?'POST':'GET',
-    headers:{'Content-Type':'application/json',...(index>=0?{Authorization:`Bearer ${liveAuth!.tokens[index]}`}:{})},
+    headers:{'Content-Type':'application/json',...(index>=0?{Authorization:`Bearer ${liveAuth?.tokens[index] ?? ['fixture-http-buyer','fixture-http-seller'][index]}`}:{})},
     ...(payload?{body:JSON.stringify(payload)}:{}),signal:AbortSignal.timeout(20000)});
   assert.equal(response.status,status,`Authenticated ${path} status`);
-  return await response.json() as Awaited<ReturnType<CommerceService['get']>>;
+  assert.match(response.headers.get('cache-control') ?? '',/no-store/);
+  return await response.json() as T;
 }
 try {
   const existing=(await pool.query('select count(*)::int n from pilot_exchanges')).rows[0].n;
@@ -231,11 +251,9 @@ try {
   };
   const human=async(index:number,id:string,command:unknown)=>{
     const view=await commerce.get(actors[index]!,id);
-    if(liveAuth) return publicRequest(index,`/v1/commerce/exchanges/${id}/actions`,{key:randomUUID(),revision:view.revision,command});
-    return commerce.command(actors[index]!,id,randomUUID(),view.revision,command);
+    return publicRequest(index,`/v1/commerce/exchanges/${id}/actions`,{key:randomUUID(),revision:view.revision,command});
   };
-  const positiveFlow=await checkHermesPositive(commerce,secret,nativeStep,human,eventually,
-    liveAuth?input=>publicRequest(0,'/v1/commerce/requests',{key:randomUUID(),input}):undefined);
+  const positiveFlow=await checkHermesPositive(commerce,secret,nativeStep,human,eventually,publicRequest);
   assert.equal(positiveCalls,positiveFlow.agentPreparations);
   for(const owner of [0,1]) {
     const privateCalls=calls.filter(c=>c.key===`Bearer fixture-provider-${owner}`);
