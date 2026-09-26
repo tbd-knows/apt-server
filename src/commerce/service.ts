@@ -1,3 +1,4 @@
+import { connectedReturnSchema,connectedReturnDraftView,prepareConnectedReturn,shareConnectedReturn } from './connected-return.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { AppError } from '../errors.js';
@@ -54,11 +55,12 @@ export class CommerceService {
           && ['label','label_refund'].includes(operation.kind) && effectStarted==='true'
           && (!operation.providerId || referenceUnverified==='true') && !!e.offers.find(o=>o.version===version)?.connectedShipping,
       }));
-    const {verifiedDropoff:_internalDropoff,connectedShipping:_internalShipping,connectedOfferDraft,...privateInput}=await this.repository.privateInput(e,actor);
+    const {verifiedDropoff:_internalDropoff,connectedShipping:_internalShipping,connectedOfferDraft,connectedReturnDraft,connectedReturn:_internalReturn,...privateInput}=await this.repository.privateInput(e,actor);
     const verifiedDropoff=await verifiedDropoffView(this,actor,id);
     const connectedShippingReady=await this.connectedReadiness(e);
     return { ...view, requestDigest: digest(e.request), privateInput,
       verifiedDropoff,
+      connectedReturnDraft:connectedReturnDraftView(connectedReturnDraft,e.revision,this.now(),verifiedDropoff?.state==='current' && verifiedDropoff.id===connectedReturnDraft?.shipping.dropoffId),
       connectedOfferDraft:connectedOfferDraftView(connectedOfferDraft,e.revision,this.now(),verifiedDropoff?.state==='current' && verifiedDropoff.id===connectedOfferDraft?.shipping.dropoffId),
       shippingData: await shippingDataView(this,e,actor,this.now()),
       returnShippingOptions:await returnShippingOptions(this,actor,id),
@@ -117,6 +119,17 @@ export class CommerceService {
         await this.repository.event(sql, e, actor, 'agent_action_approved', { actionId: action.id, digest: action.digest, command: action.command });
       }
       switch (command.type) {
+        case 'share_connected_return':
+          await shareConnectedReturn(this,sql,e,actor,command.draftId,command.draftDigest);
+          break;
+        case 'dismiss_connected_return': {
+          requireRole(e,actor,'buyer');
+          const data=await this.repository.privateInput(e,actor,sql);
+          if(data.connectedReturnDraft?.id!==command.draftId) conflict('Prepared return option not found.');
+          delete data.connectedReturnDraft;await this.repository.savePrivate(sql,e,actor,data);
+          break;
+        }
+
         case 'share_connected_offer': {
           await shareConnectedOffer(this,sql,e,actor,command.draftId,command.draftDigest);
           break;
@@ -395,6 +408,7 @@ export class CommerceService {
           break;
         }
         case 'approve_return': {
+          if(currentOffer(e).connectedShipping) conflict('Agree the separate return postage funding before approving a purchase. This option is not spending authority.');
           const plan = e.returnPlan;
           if (!plan?.quote || plan.shipping !== 'none' || e.resolution?.id !== plan.resolutionId || plan.approvals.includes(actor)
             || Date.parse(plan.quote.expiresAt) <= now.getTime() || stableJson(command.binding) !== stableJson(returnBinding(e, actor))) conflict('Return approval is stale, duplicated or does not match.');
@@ -526,7 +540,7 @@ export class CommerceService {
         command: preparedCommandSchema, explanation: z.string().trim().min(1).max(500) }).strict(),
       z.object({ action: z.literal('research'), exchangeId: z.uuid(), research: researchInputSchema }).strict(),
       serviceActionSchema,serviceHistorySchema,
-      shippingValidationSchema,shippingRatesSchema,shippingOptionSchema,verifyDropoffSchema,connectedOfferSchema,
+      shippingValidationSchema,shippingRatesSchema,shippingOptionSchema,verifyDropoffSchema,connectedOfferSchema,connectedReturnSchema,
     ]).parse(raw);
     const actor = context.userId;
     if (command.action === 'state') {
@@ -540,6 +554,7 @@ export class CommerceService {
         const connectedShippingReady=await this.connectedReadiness(e);
         return { ...view, execution:{connectedShippingReady}, harness: harnessContext(e, actor, actor===e.buyerId ? buyer : seller, buyer, seller,this.now(),connectedShippingReady),
           verifiedDropoff,
+          connectedReturnDraft:connectedReturnDraftView((actor===e.buyerId?buyer:seller).connectedReturnDraft,e.revision,this.now(),verifiedDropoff?.state==='current'),
           connectedOfferDraft:connectedOfferDraftView(prepared,e.revision,this.now(),verifiedDropoff?.state==='current' && verifiedDropoff.id===prepared?.shipping.dropoffId),
           shippingData: await shippingDataView(this,e,actor,this.now()),
           returnShippingOptions:await returnShippingOptions(this,actor,e.id),
@@ -556,6 +571,7 @@ export class CommerceService {
     if (command.action === 'prepare_service_action') return prepareServiceAction(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_option') return prepareShippingOption(this,actor,context.requestMessageId,command);
     if (command.action === 'verify_dropoff') return verifyDropoff(this,actor,command);
+    if (command.action === 'prepare_connected_return') return prepareConnectedReturn(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_connected_offer') return prepareConnectedOffer(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_rates') return prepareShippingRates(this,actor,context.requestMessageId,command);
     if (command.action === 'prepare_shipping_validation') return prepareShippingValidation(this,actor,context.requestMessageId,command);

@@ -89,6 +89,8 @@ export interface PrivateInput {
   discoveryPostcode?: string; discoveryVersion?: number;
   verifiedDropoff?: import('./verified-dropoff.js').VerifiedDropoff;
   connectedOfferDraft?: import('./connected-offer.js').ConnectedOfferDraft;
+  connectedReturnDraft?: import('./connected-return.js').ConnectedReturnDraft;
+  connectedReturn?: {version:number;resolutionId:string;shipping:import('./connected-offer.js').ConnectedShipping};
   connectedShipping?: Record<string,import('./connected-offer.js').ConnectedShipping>;
 }
 /** Preparations do not grant authority. The authenticated owner reviews the
@@ -115,6 +117,7 @@ export interface PreparedAction {
   explanation: string; expiresAt: string; digest: string;
 }
 export interface ReturnPlan {
+  funding?: 'unselected';
   resolutionId: string; version: number; quote: Quote | null; subsidy: string; approvals: string[];
   shipping: 'none' | 'label_pending' | 'label_ready' | 'in_transit' | 'delivered' | 'exception';
   droppedAt: string | null; carrierAcceptedAt: string | null; trackingUpdatedAt: string | null; receivedAt: string | null;
@@ -226,12 +229,14 @@ export function exchangeView(exchange: Exchange, userId: string) {
     carrierAcceptedAt: exchange.carrierAcceptedAt, trackingUpdatedAt: exchange.trackingUpdatedAt,
     cancellationRequested: exchange.cancellationRequested, problem: exchange.problem ?? Object.values(exchange.operationIssues ?? {})[0] ?? null,
     resolution: exchange.resolution ?? null, resolutionBinding: exchange.resolution ? resolutionBinding(exchange, userId) : null,
-    returnPlan: exchange.returnPlan ?? null, returnBinding: exchange.returnPlan?.quote ? returnBinding(exchange, userId) : null,
+    returnPlan: exchange.returnPlan ?? null, returnBinding: exchange.returnPlan?.quote && !exchange.offers.at(-1)?.connectedShipping ? returnBinding(exchange, userId) : null,
     createdAt: exchange.createdAt, updatedAt: exchange.updatedAt, expiresAt: exchange.expiresAt,
   };
 }
 
 export const humanCommandSchema = z.discriminatedUnion('type', [
+  z.object({type:z.literal('share_connected_return'),draftId:z.uuid(),draftDigest:z.string().length(64)}).strict(),
+  z.object({type:z.literal('dismiss_connected_return'),draftId:z.uuid()}).strict(),
   z.object({type:z.literal('share_connected_offer'),draftId:z.uuid(),draftDigest:z.string().length(64)}).strict(),
   z.object({type:z.literal('dismiss_connected_offer'),draftId:z.uuid()}).strict(),
   z.object({ type: z.literal('propose_shipping_data'), connectionId: z.uuid() }).strict(),

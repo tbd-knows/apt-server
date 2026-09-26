@@ -589,3 +589,25 @@ refusal, both-owner recovery, concurrent worker/restart behavior, changed access
 between approvals, changed price/forms, cancellation, wrong operation, expiry,
 and rejection of known/possibly dispatched purchases and refunds. They do not
 establish real provider or live-model acceptance.
+
+## Exact return option review without spending
+
+After fresh return consent, private validation/rates and buyer-side drop-off
+verification, the buyer agent calls `prepare_connected_return`. The private draft
+binds the original sale/return resolution, next return version, exact rate,
+reversed address versions, parcel, current account and verified drop-off evidence.
+The buyer reviews and explicitly shares it; the seller cannot share the buyer's
+draft and neither model can publish it directly. Sharing is idempotent and does
+not replace the paid outbound offer or create a provider operation.
+
+Both owners then see the selected return quote and the explicit `unselected`
+funding state. The payer choice remains unresolved; no default is inferred from
+the original seller reimbursement. Connected return purchase approvals are denied
+and no purchase binding is exposed while that lifecycle remains unfinished.
+Private account details stay outside model/mobile projections. Any private input,
+consent, account, resolution, revision or evidence expiry change blocks sharing.
+
+The real PostgreSQL/SDK return suite covers both UPS printed PDF and USPS retail
+printing-code options, private preparation, wrong-owner/tampered sharing, replay,
+unchanged original sale, private-data projection, stale packing and no purchase
+operation after sharing. These are synthetic provider scenarios.

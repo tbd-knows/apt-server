@@ -34,6 +34,7 @@ export function harnessContext(e: Exchange, actor: string, mine: PrivateInput, b
         || Date.parse(e.shippingData.expiresAt)<=now.getTime()
         || ![e.buyerId,e.sellerId].every(id=>e.shippingData!.approvedBy.includes(id))) missing.push('return_shipping_data_permission');
       if(!e.returnPlan.quote) missing.push('verified_return_shipping_option');
+      if(e.returnPlan.quote && e.offers.at(-1)?.connectedShipping) missing.push('return_postage_funding_decision');
     }
     if(e.returnPlan.shipping==='label_pending') missing.push('provider_return_postage_confirmation');
     if(e.returnPlan.shipping==='label_ready' && !e.returnPlan.droppedAt) missing.push(buyerRole?'owner_return_handoff':'buyer_return_handoff');
