@@ -86,8 +86,12 @@ const model = createServer(async (request, response) => {
   if (request.method === 'GET') { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ data: [{ id: 'fixture-model' }] })); return; }
   calls.push({ key: request.headers.authorization ?? '', body: raw });
   const body = JSON.parse(raw);
+  // Auxiliary calls (for example automatic session titles) can contain the
+  // same owner/exchange but cannot execute tools. They must not consume a
+  // once-only scripted preparation before the actual commerce turn receives it.
+  const acceptsTools=Array.isArray(body.tools) && body.tools.some((tool:{function?:{name?:string}})=>tool.function?.name==='tool_call');
   let call = null;
-  if (fixtureExchangeId && !proposed && request.headers.authorization === 'Bearer fixture-provider-1' && raw.includes(fixtureExchangeId)) {
+  if (acceptsTools && fixtureExchangeId && !proposed && request.headers.authorization === 'Bearer fixture-provider-1' && raw.includes(fixtureExchangeId)) {
     const current = await commerce.get(actors[1]!, fixtureExchangeId);
     if (current.stage === 'waiting_for_seller') {
       proposed = true;
@@ -97,7 +101,7 @@ const model = createServer(async (request, response) => {
       }) } };
     }
   }
-  if(positiveStep && request.headers.authorization===`Bearer fixture-provider-${positiveStep.index}` && raw.includes(positiveStep.exchangeId)) {
+  if(acceptsTools && positiveStep && request.headers.authorization===`Bearer fixture-provider-${positiveStep.index}` && raw.includes(positiveStep.exchangeId)) {
     const step=positiveStep;positiveStep=null;positiveCalls++;
     call={id:`call_positive_${positiveCalls}`,type:'function',function:{name:'tool_call',arguments:JSON.stringify({
       name:'mcp__apt__apt_commerce',arguments:await step.input(),
@@ -251,6 +255,12 @@ try {
   assert(ledger.rows.every(r=>r.a2a_task_id));
   const nativeStep:NativeAgentStep=async(index,exchangeId,input,check,label)=>{
     assert.equal(positiveStep,null);positiveStep={index,exchangeId,input};
+    const auxiliary=await fetch(`http://127.0.0.1:${modelAddress.port}/v1/chat/completions`,{method:'POST',
+      headers:{'Content-Type':'application/json',Authorization:`Bearer fixture-provider-${index}`},
+      body:JSON.stringify({model:'fixture-model',messages:[{role:'user',content:`Generate a title for ${exchangeId}`}]}),
+      signal:AbortSignal.timeout(5000)});
+    const auxiliaryBody=await auxiliary.json() as {choices:{message:{tool_calls?:unknown}}[]};
+    assert.equal(auxiliaryBody.choices[0]?.message.tool_calls,undefined,'Auxiliary request received a commerce tool');
     await commerce.repository.transaction(async sql=>{
       const e=await commerce.repository.get(exchangeId,actors[index]!,sql);
       await commerce.repository.message(sql,e,actors[index]!,actors[index]!,'status',{action:'owner_update',text:'Synthetic human asks agent to continue this exchange.'});
